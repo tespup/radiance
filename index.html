@@ -1,0 +1,1455 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>СИЯНИЕ — скользящий свет</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    height: 100%; height: var(--tg-viewport-stable-height, 100dvh);
+    overflow: hidden; background: #04060d;
+    font-family: 'Segoe UI Variable Display', 'Segoe UI', Inter, system-ui, -apple-system, sans-serif;
+    -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent;
+    touch-action: none; overscroll-behavior: none;
+  }
+  #c, #u { display: block; position: fixed; inset: 0; width: 100%; height: 100%; }
+  #u { pointer-events: none; z-index: 2; }
+  #c.play { cursor: none; }
+  #hint {
+    position: fixed; left: 50%; bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+    transform: translateX(-50%); z-index: 3;
+    color: rgba(180,215,235,.34); font-size: 11px; letter-spacing: .2em; text-transform: uppercase;
+    pointer-events: none; text-align: center; max-width: 94vw; line-height: 1.7;
+  }
+  #hint b { color: rgba(190,240,255,.6); font-weight: 600; }
+  @media (max-width: 560px) {
+    #hint { font-size: 8.5px; letter-spacing: .1em; bottom: calc(8px + env(safe-area-inset-bottom, 0px)); }
+  }
+
+  /* Экрaн «переверни телефон»: только телефон + портрет (приём из Tanks) */
+  #rotate {
+    position: fixed; inset: 0; z-index: 50; display: none;
+    flex-direction: column; align-items: center; justify-content: center; gap: 3.6vh;
+    background: radial-gradient(130% 95% at 50% 38%, #0b1226 0%, #04060d 72%);
+    text-align: center; padding: 6vh 9vw;
+  }
+  #rotate .phone {
+    width: 44px; height: 76px; border-radius: 9px; position: relative;
+    border: 2px solid rgba(150,220,255,.7);
+    box-shadow: 0 0 26px rgba(110,200,255,.4), inset 0 0 14px rgba(110,200,255,.18);
+    animation: turn 2.8s cubic-bezier(.55,.02,.3,1) infinite;
+  }
+  #rotate .phone i {
+    position: absolute; left: 50%; bottom: 6px; width: 12px; height: 2px;
+    margin-left: -6px; border-radius: 2px; background: rgba(150,220,255,.7);
+  }
+  #rotate .rt { font-size: clamp(15px, 4.4vw, 23px); font-weight: 300; letter-spacing: .24em; color: #eaf6ff; }
+  #rotate .rs { font-size: clamp(11px, 3.1vw, 14px); line-height: 1.85; max-width: 30ch; color: rgba(190,220,240,.5); }
+  @keyframes turn {
+    0%, 16% { transform: rotate(0deg) }
+    54%, 88% { transform: rotate(-90deg) }
+    100% { transform: rotate(-90deg) }
+  }
+  @media screen and (orientation: portrait) and (hover: none) and (pointer: coarse) {
+    #rotate { display: flex; }
+    #hint { display: none; }
+  }
+</style>
+<script>
+/* ══════════════════════════════════════════════════════════════════════
+   TELEGRAM MINI APP.
+   Всё главное идёт через нативный мост клиента (тот же приём, что и в
+   Tanks: TelegramWebviewProxy.postEvent → external.invoke → postMessage),
+   поэтому игра остаётся одним файлом и работает даже без сети и без
+   telegram-web-app.js. Официальный SDK догружается асинхронно и нужен
+   только для входящих событий: «Назад» = пауза и кнопка «ПОДЕЛИТЬСЯ».
+   Вне Telegram все функции молча превращаются в noop.
+   ══════════════════════════════════════════════════════════════════════ */
+const TG = (function () {
+  const ua = navigator.userAgent || '';
+  const mobile = /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+  const proxy = !!(window.TelegramWebviewProxy || (window.external && window.external.invoke));
+  const inTG = !!(window.TelegramWebviewProxy || /Telegram/i.test(ua) || (window.Telegram && window.Telegram.WebApp));
+  let sdk = null, ready = false, vpCbs = [], backCb = null, shareCb = null, mainShown = false, state = 'title';
+
+  function bridge(type, data) {
+    const payload = data === undefined ? '' : JSON.stringify(data);
+    try {
+      if (window.TelegramWebviewProxy && window.TelegramWebviewProxy.postEvent)
+        window.TelegramWebviewProxy.postEvent(type, payload);
+      else if (window.external && window.external.invoke)
+        window.external.invoke(JSON.stringify({ eventType: type, eventData: data || null }));
+      else if (window.parent !== window)
+        window.parent.postMessage(JSON.stringify({ eventType: type, eventData: data || null }), '*');
+    } catch (e) { /* мост недоступен — игра не должна из-за этого вставать */ }
+  }
+
+  /* ── полноэкранный режим и ориентация (мобильные просят FS, десктоп
+        наоборот выходит из «сломанного» фуллскрина — как в Tanks) ───── */
+  function landscape() {
+    if (!mobile) return;
+    const wide = window.innerWidth > window.innerHeight;
+    if (wide && screen.orientation && screen.orientation.lock) {
+      try { screen.orientation.lock('landscape').catch(function () {}); } catch (e) {}
+    }
+    bridge('web_app_toggle_orientation_lock', { locked: wide });
+  }
+  function fullScreen() {
+    if (mobile) {
+      bridge('web_app_expand');
+      bridge('web_app_request_fullscreen');
+      if (sdk && sdk.requestFullscreen) { try { sdk.requestFullscreen(); } catch (e) {} }
+      landscape();
+    }
+  }
+  let taps = 0;
+  function gesture() {                       // фуллскрин пускают только по жесту
+    if (!mobile || taps++ > 2) return;
+    fullScreen();
+  }
+
+  /* ── старт: ready + разворачивание + запрет вертикального свайпа ──── */
+  bridge('ready');
+  bridge('web_app_ready');
+  bridge('web_app_expand');
+  bridge('web_app_setup_swipe_behavior', { allow_vertical_swipe: false });
+  if (mobile) { fullScreen(); setTimeout(fullScreen, 300); }
+  else { bridge('web_app_exit_fullscreen'); setTimeout(function () { bridge('web_app_exit_fullscreen'); }, 200); }
+  addEventListener('resize', landscape);
+  addEventListener('orientationchange', function () { landscape(); setTimeout(landscape, 150); setTimeout(landscape, 450); });
+  landscape();
+
+  /* ── входящие события умеем принимать только через SDK: догружаем его
+        асинхронно, сбой сети ничему не мешает ─────────────────────── */
+  function boot(w) {
+    if (ready || !w || w.platform === 'unknown') return;
+    ready = true; sdk = w;
+    try {
+      w.ready(); w.expand();
+      if (w.disableVerticalSwipes) w.disableVerticalSwipes();
+      if (w.setBackgroundColor) w.setBackgroundColor('#04060d');
+      if (w.setHeaderColor) w.setHeaderColor('#04060d');
+    } catch (e) {}
+    try { if (w.BackButton && backCb) w.BackButton.onClicked(function () { backCb(); }); } catch (e) {}
+    try { if (w.MainButton && shareCb) w.MainButton.onClicked(function () { shareCb(); }); } catch (e) {}
+    try { if (w.onEvent) w.onEvent('viewportChanged', function () { vpCbs.forEach(function (f) { f(); }); }); } catch (e) {}
+    sync(state);
+    fullScreen();
+  }
+  if (inTG) {
+    boot(window.Telegram && window.Telegram.WebApp);
+    const s = document.createElement('script');
+    s.src = 'https://telegram.org/js/telegram-web-app.js';
+    s.async = true;
+    s.onload = function () { boot(window.Telegram && window.Telegram.WebApp); };
+    s.onerror = function () { /* офлайн: остаёмся на мосте */ };
+    document.head.appendChild(s);
+  }
+
+  /* ── кнопка «Назад» и кнопка «ПОДЕЛИТЬСЯ» показываем по состоянию ─── */
+  function sync(now) {
+    state = now;
+    if (!sdk) return;
+    const play = state === 'play' || state === 'pause';
+    try { if (sdk.BackButton) { play && mobile ? sdk.BackButton.show() : sdk.BackButton.hide(); } } catch (e) {}
+    try {
+      const mb = sdk.MainButton;
+      if (!mb) return;
+      if (state === 'dead' && mobile) {
+        const p = { text: 'ПОДЕЛИТЬСЯ', is_visible: true, is_active: true, has_shine_effect: true };
+        if (mb.setParams) mb.setParams(p); else { mb.setText(p.text); mb.show(); }
+        mainShown = true;
+      } else if (mainShown) { mb.hide(); mainShown = false; }
+    } catch (e) {}
+  }
+
+  function haptic(kind) {                    // 'light' | 'medium' | 'heavy' | 'win' | 'lose'
+    if (!mobile) return;
+    if (sdk && sdk.HapticFeedback) {
+      try {
+        if (kind === 'win' || kind === 'lose') sdk.HapticFeedback.notificationOccurred(kind === 'win' ? 'success' : 'error');
+        else sdk.HapticFeedback.impactOccurred(kind);
+      } catch (e) {}
+      return;
+    }
+    if (kind === 'win') bridge('web_app_trigger_haptic_feedback', { type: 'notify', notification_type: 'success' });
+    else if (kind === 'lose') bridge('web_app_trigger_haptic_feedback', { type: 'notify', notification_type: 'error' });
+    else bridge('web_app_trigger_haptic_feedback', { type: 'impact', impact_style: kind });
+  }
+
+  function share(score, meters) {
+    const message = 'Я улетел на ' + meters + ' м и набрал ' + score + ' в СИЯНИИ ✦';
+    if (sdk && sdk.shareScore) { try { sdk.shareScore({ score: String(score), message: message }); return; } catch (e) {} }
+    bridge('web_app_share_score', { score: String(score), message: message });
+  }
+
+  const api = {
+    inTG: inTG, mobile: mobile, proxy: proxy, mainShown: function () { return mainShown; },
+    gesture: gesture, sync: sync, haptic: haptic, share: share,
+    onViewport: function (f) { vpCbs.push(f); },
+    onBack: function (f) { backCb = f; if (sdk && sdk.BackButton && state !== 'title') { try { sdk.BackButton.show(); } catch (e) {} } },
+    onShare: function (f) { shareCb = f; }
+  };
+  return api;
+})();
+</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+<canvas id="u"></canvas>
+<div id="rotate">
+  <div class="phone"><i></i></div>
+  <div class="rt">ПОВЕРНИ ТЕЛЕФОН</div>
+  <div class="rs">Сияние летит только горизонтально.<br>Поверни устройство — игра подождёт.</div>
+</div>
+<div id="hint"><b>ЛКМ / ПРОБЕЛ</b> — нить света &nbsp;·&nbsp; P — пауза &nbsp;·&nbsp; M — звук</div>
+<script>
+"use strict";
+/* ══════════════════════════════════════════════════════════════════════
+   СИЯНИЕ  ·  RADIANCE
+   Одна кнопка — одна механика: держи нить света к огоньку, отпусти в дуге.
+   За тобой идёт Тьма. Она никогда не устаёт.
+   ══════════════════════════════════════════════════════════════════════ */
+
+const cv = document.getElementById('c');
+const gctx = cv.getContext('2d');           // мир: мягкое свечение, низкое разрешение не видно
+const ucv = document.getElementById('u');
+const uctx = ucv.getContext('2d');          // HUD: родное разрешение — текст острый
+let ctx = gctx;
+
+/* ── utils ─────────────────────────────────────────────────────────── */
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const lerp  = (a, b, t) => a + (b - a) * t;
+const rand  = (a, b) => a + Math.random() * (b - a);
+const pick  = arr => arr[(Math.random() * arr.length) | 0];
+const hsl   = (h, s, l, a = 1) => `hsla(${h},${s}%,${l}%,${a})`;
+const hypot = Math.hypot;
+
+/* ── viewport / scale ──────────────────────────────────────────────── */
+const TOUCH = window.matchMedia && window.matchMedia('(hover: none)').matches;
+const WORD_TAP = TOUCH ? 'КОСНИСЬ ЭКРАНА' : 'НАЖМИ   ИЛИ   ПРОБЕЛ';
+const WORD_TAP2 = TOUCH ? 'КОСНИСЬ ЭКРАНА — ещё раз' : 'ПРОБЕЛ ИЛИ КЛИК — ещё раз';
+// Портрет телефона: тот же критерий, что и в CSS у экрана «поверни телефон»
+const PORTRAIT = window.matchMedia ? window.matchMedia('(orientation: portrait) and (hover: none) and (pointer: coarse)') : { matches: false };
+// вырез/закругления: HUD не должен залезать под notch (в Telegram ландшафт с вырезом — норма)
+const SIPROBE = document.createElement('div');
+SIPROBE.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;pointer-events:none;' +
+  'padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)';
+document.head.appendChild(SIPROBE);
+const SI = { l: 0, r: 0, t: 0, b: 0 };
+function readSafe() {
+  const cs = getComputedStyle(SIPROBE), px = v => Math.round(parseFloat(v) || 0);
+  SI.t = px(cs.paddingTop); SI.r = px(cs.paddingRight); SI.b = px(cs.paddingBottom); SI.l = px(cs.paddingLeft);
+}
+if (TOUCH) {
+  document.getElementById('hint').innerHTML = '<b>ДЕРЖИ ПАЛЕЦ</b> — нить света &nbsp;·&nbsp; отпусти в дуге';
+}
+let W = 0, H = 0, DPR = 1, DPRU = 1, SCALE = 1;
+const WS_MAX = 1.5;   // потолок внутреннего разрешения мира (выше — глаз не различит)
+let U = 1, GRAV = 0, WIND = 0, MAXV = 0, RANGE = 0, seaY = 0, ceilY = 0;
+
+function resize() {
+  DPRU = clamp(window.devicePixelRatio || 1, 1, 2);
+  DPR = clamp(Math.min(DPRU, WS_MAX) * SCALE, 0.6, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  ucv.width = Math.round(W * DPRU); ucv.height = Math.round(H * DPRU);
+  gctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  // масштаб мира — по меньшей из сторон, чтобы на вертикальном телефоне
+  // в кадр всё равно попадало минимум полтора «махa»
+  U = clamp(Math.min(H / 720, W / 820), 0.6, 1.6);
+  GRAV = 1460 * U; WIND = 356 * U; MAXV = 1760 * U; RANGE = 402 * U;
+  seaY = H * 0.855; ceilY = H * 0.055;
+  readSafe();
+  buildPost();
+}
+window.addEventListener('resize', resize);
+
+/* ══════════════════════════════════════════════════════════════════
+   AUDIO — полностью процедурный эмбиент (WebAudio, без файлов)
+   ══════════════════════════════════════════════════════════════════ */
+const A = {
+  ac: null, master: null, padGain: null, pad: [], drone: null, droneGain: null,
+  ready: false, muted: false, step: 0,
+
+  boot() {
+    if (this.ready) return;
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      const ac = this.ac = new AC();
+      const master = this.master = ac.createGain();
+      master.gain.value = this.muted ? 0 : 0.85;
+      const comp = ac.createDynamicsCompressor();
+      comp.threshold.value = -18; comp.ratio.value = 4;
+      master.connect(comp); comp.connect(ac.destination);
+
+      // ── мягкая пэдовая подушка
+      const padGain = this.padGain = ac.createGain();
+      padGain.gain.value = 0.0;
+      const lp = ac.createBiquadFilter();
+      lp.type = 'lowpass'; lp.frequency.value = 620; lp.Q.value = 0.7;
+      padGain.connect(lp); lp.connect(master);
+      const freqs = [55, 82.4, 110, 164.8, 220];
+      freqs.forEach((f, i) => {
+        const o = ac.createOscillator(); o.type = i % 2 ? 'sine' : 'triangle';
+        o.frequency.value = f; o.detune.value = (i - 2) * 6;
+        const g = ac.createGain(); g.gain.value = 0.24 / (1 + i * 0.55);
+        o.connect(g); g.connect(padGain); o.start();
+        // медленное дыхание
+        const lfo = ac.createOscillator(); lfo.type = 'sine';
+        lfo.frequency.value = 0.045 + i * 0.017;
+        const la = ac.createGain(); la.gain.value = 0.1 / (1 + i * 0.4);
+        lfo.connect(la); la.connect(g.gain); lfo.start();
+        this.pad.push(o);
+      });
+      padGain.gain.setTargetAtTime(0.30, ac.currentTime, 3.5);
+
+      // ── гул приближающейся Тьмы
+      const dg = this.droneGain = ac.createGain(); dg.gain.value = 0;
+      const df = ac.createBiquadFilter(); df.type = 'lowpass'; df.frequency.value = 240;
+      const d1 = ac.createOscillator(); d1.type = 'sawtooth'; d1.frequency.value = 41;
+      const d2 = ac.createOscillator(); d2.type = 'sine'; d2.frequency.value = 41 * 1.007;
+      d1.connect(df); d2.connect(df); df.connect(dg); dg.connect(master);
+      d1.start(); d2.start();
+      this.drone = d1;
+      this.ready = true;
+    } catch (e) { /* без звука всё тоже хорошо */ }
+  },
+  setMuted(m) {
+    this.muted = m;
+    if (this.ready) this.master.gain.setTargetAtTime(m ? 0 : 0.85, this.ac.currentTime, 0.08);
+  },
+  danger(k) {
+    if (!this.ready) return;
+    this.droneGain.gain.setTargetAtTime(clamp(k, 0, 1) * 0.30, this.ac.currentTime, 0.14);
+  },
+  note(freq, dur, gain, type = 'sine', det = 0, glideTo = 0) {
+    if (!this.ready || this.muted) return;
+    const ac = this.ac, t = ac.currentTime;
+    const o = ac.createOscillator(); o.type = type; o.frequency.value = freq; o.detune.value = det;
+    if (glideTo) o.frequency.exponentialRampToValueAtTime(glideTo, t + dur);
+    const g = ac.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(gain, t + Math.min(0.02, dur * 0.2));
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(this.master);
+    o.start(t); o.stop(t + dur + 0.05);
+  },
+  noise(dur, f0, f1, gain, q = 1) {
+    if (!this.ready || this.muted) return;
+    const ac = this.ac, t = ac.currentTime, n = ac.sampleRate * dur;
+    const buf = ac.createBuffer(1, Math.max(1, n | 0), ac.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+    const s = ac.createBufferSource(); s.buffer = buf;
+    const bp = ac.createBiquadFilter(); bp.type = 'bandpass'; bp.Q.value = q;
+    bp.frequency.setValueAtTime(f0, t); bp.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    const g = ac.createGain(); g.gain.value = gain;
+    s.connect(bp); bp.connect(g); g.connect(this.master);
+    s.start(t);
+  },
+  // пентатоника — любые попадания звучат гармонично
+  pluck(combo) {
+    const sc = [0, 3, 5, 7, 10, 12, 15, 17, 19, 22];
+    const n = sc[Math.min(sc.length - 1, combo | 0)];
+    const f = 440 * Math.pow(2, (n - 12) / 12);
+    this.note(f, 0.26, 0.10, 'triangle');
+    this.note(f * 2, 0.14, 0.035, 'sine');
+  },
+  spark(combo) {
+    const sc = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24];
+    const n = sc[Math.min(sc.length - 1, combo | 0)];
+    const f = 660 * Math.pow(2, n / 12);
+    this.note(f, 0.20, 0.055, 'sine');
+    this.note(f * 3, 0.07, 0.016, 'sine');
+  },
+  gate() {
+    [0, 4, 7, 11].forEach((n, i) =>
+      setTimeout(() => this.note(330 * Math.pow(2, n / 12), 0.6, 0.075, 'sine'), i * 42));
+    this.noise(0.5, 1400, 180, 0.05, 0.7);
+  },
+  perfect() {
+    [0, 7, 12, 16].forEach((n, i) =>
+      setTimeout(() => this.note(392 * Math.pow(2, n / 12), 0.34, 0.05, 'triangle'), i * 26));
+  },
+  splash() { this.noise(0.42, 900, 120, 0.09, 0.6); this.note(120, 0.28, 0.05, 'sine', 0, 60); },
+  die() {
+    this.noise(1.5, 700, 40, 0.16, 0.5);
+    [0, -2, -5, -9].forEach((n, i) =>
+      setTimeout(() => this.note(220 * Math.pow(2, n / 12), 1.5, 0.09, 'sine'), i * 130));
+  }
+};
+
+/* ══════════════════════════════════════════════════════════════════
+   МИР
+   ══════════════════════════════════════════════════════════════════ */
+const G = {
+  state: 'title',          // title | play | dead | pause
+  cam: 0, t: 0, clock: 0, run: 0,
+  p: { x: 0, y: 0, vx: 0, vy: 0, r: 8, tilt: 0 },
+  nodes: [], sparks: [], gates: [], parts: [], waves: [], texts: [], trail: [],
+  attached: null, hold: false, holdGap: 0,
+  umbra: 0, umbraV: 0, dist: 0, score: 0, combo: 0, comboT: 0, maxCombo: 0,
+  got: 0, gatesHit: 0, perfects: 0, beaten: false,
+  best: 0, genX: 0, lastY: 0, nodeN: 0,
+  shake: 0, hitStop: 0, flash: 0, dark: 0, hue: 192, hueSky: 192,
+  deadT: 0, tip: 0, demo: true, aiT: 0,
+};
+try { G.best = parseInt(localStorage.getItem('radiance.best') || '0', 10) || 0; } catch (e) { }
+
+/* звёзды / дымка — нормализованные, зацикленные параллаксом */
+let stars = [], motes = [], postLayer = null;
+
+function buildField() {
+  stars = []; motes = [];
+  for (let i = 0; i < 210; i++)
+    stars.push({ x: Math.random(), y: Math.random() * 0.9, z: rand(0.05, 0.34), r: rand(0.5, 1.7), tw: rand(0.4, 3), ph: rand(0, TAU) });
+  for (let i = 0; i < 46; i++)
+    motes.push({ x: Math.random(), y: rand(0.05, 0.85), z: rand(0.12, 0.5), r: rand(1.4, 3.6), ph: rand(0, TAU), sp: rand(0.2, 0.7) });
+}
+function buildPost() {
+  // Виньетка + зерно пекаются ОДИН раз в офскрин и печатаются одним blit-ом.
+  // Раньше это было два полноэкранных прохода (градиент + паттерн в 'overlay') —
+  // ровно те два прохода, которые съедали больше половины кадра.
+  const pw = Math.max(2, Math.round(W * DPR)), ph = Math.max(2, Math.round(H * DPR));
+  const c = postLayer || (postLayer = document.createElement('canvas'));
+  c.width = pw; c.height = ph;
+  const g = c.getContext('2d');
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.clearRect(0, 0, pw, ph);
+  const vg = g.createRadialGradient(pw / 2, ph * 0.48, Math.min(pw, ph) * 0.30, pw / 2, ph * 0.48, Math.max(pw, ph) * 0.78);
+  vg.addColorStop(0, 'rgba(1,2,7,0)');
+  vg.addColorStop(1, 'rgba(1,2,7,1)');   // степень — глобальной альфой в post()
+  g.fillStyle = vg; g.fillRect(0, 0, pw, ph);
+  const n = 128, nc = document.createElement('canvas');
+  nc.width = nc.height = n;
+  const ng = nc.getContext('2d'), img = ng.createImageData(n, n);
+  for (let i = 0; i < n * n * 4; i += 4) {
+    const v = Math.random() < 0.5 ? 255 : 0;   // чёрно-белые крапинки: среднее не всплывает
+    img.data[i] = img.data[i + 1] = img.data[i + 2] = v;
+    img.data[i + 3] = 4 + Math.random() * 11;
+  }
+  ng.putImageData(img, 0, 0);
+  g.fillStyle = g.createPattern(nc, 'repeat');
+  g.fillRect(0, 0, pw, ph);
+}
+
+/* ── генерация тропы ─────────────────────────────────────────────── */
+function addNode() {
+  const ramp = clamp(G.dist / (11000 * U), 0, 1);
+  // мягкая прокачка самому старту: первые огоньки близко и по одной высоте
+  const ease = clamp((G.nodeN - 1) / 5, 0, 1);
+  const gap = rand(300, 425) * U * lerp(0.8, 1, ease) * (1 + ramp * 0.42);
+  const x = G.genX + gap;
+  let y = G.lastY + rand(-1, 1) * rand(45, 165) * U * lerp(0.42, 1, ease);
+  y = clamp(y, H * 0.15, H * 0.70);
+  const prev = G.nodes[G.nodes.length - 1];
+  const n = {
+    x, y, r: 12 * U, len: 0, taut: false, slackT: 0, grabT: 0,
+    seed: Math.random() * 1000, pet: 5 + ((Math.random() * 3) | 0), spin: rand(-0.5, 0.5),
+    flash: 0, born: G.clock
+  };
+  G.nodes.push(n); G.genX = x; G.lastY = y; G.nodeN++;
+
+  // россыпь искр по дуге между огоньками — там, где проходит естественный мах
+  if (prev) {
+    const a = { x: prev.x + 96 * U, y: clamp(prev.y + 140 * U, 0, seaY - 40 * U) };
+    const b = { x: x - 74 * U, y: clamp(y + 130 * U, 0, seaY - 40 * U) };
+    const c = { x: (a.x + b.x) / 2, y: Math.min(seaY - 24 * U, Math.max(a.y, b.y) + 155 * U) };
+    const cnt = 6;
+    for (let i = 1; i <= cnt; i++) {
+      const t = i / (cnt + 1), mt = 1 - t;
+      G.sparks.push({
+        x: mt * mt * a.x + 2 * mt * t * c.x + t * t * b.x,
+        y: mt * mt * a.y + 2 * mt * t * c.y + t * t * b.y,
+        ph: rand(0, TAU), got: false, r: 5 * U
+      });
+    }
+  }
+  // врата-кольца: редко, для большого куша
+  if (G.nodeN % 7 === 4) {
+    G.gates.push({
+      x: x + 210 * U, y: clamp(y + 96 * U, H * 0.20, H * 0.64),
+      r: 88 * U, hit: false, ph: rand(0, TAU), pop: 0
+    });
+  }
+}
+function genAhead() {
+  let guard = 0;
+  while (G.genX < G.cam + W + 800 * U && guard++ < 60) addNode();
+  const cut = G.cam - 420 * U;
+  if (G.nodes.length > 40) { G.nodes = G.nodes.filter(n => n.x > cut); }
+  G.sparks = G.sparks.filter(s => s.x > cut && !s.got);
+  G.gates = G.gates.filter(g => g.x > cut);
+}
+
+function reset(demo) {
+  G.demo = demo;
+  G.cam = 0; G.genX = 0; G.lastY = H * 0.26; G.nodeN = 0;
+  G.nodes = []; G.sparks = []; G.gates = []; G.parts = []; G.waves = []; G.texts = []; G.trail = [];
+  const p = G.p;
+  p.x = W * 0.36; p.y = H * 0.34; p.vx = 560 * U; p.vy = 40 * U; p.tilt = 0;
+  // первый огонёк — прямо над стартом: нить доступна с первой же секунды
+  for (let i = 0; i < 6; i++) G.genX = p.x + (i ? i * 340 - 120 : -120) * U, addNode();
+  G.attached = null; G.hold = false; G.holdGap = 0; G.aiT = 0;
+  G.umbra = p.x - (demo ? 4000 : 1650) * U; G.umbraV = 0;
+  G.dist = 0; G.score = 0; G.combo = 0; G.comboT = 0; G.maxCombo = 0;
+  G.got = 0; G.gatesHit = 0; G.perfects = 0; G.beaten = false;
+  G.shake = 0; G.hitStop = 0; G.flash = 0; G.dark = 0; G.deadT = 0; G.run = 0;
+  G.tip = demo ? 0 : 9;
+  G.state = demo ? 'title' : 'play';
+  genAhead();
+}
+
+/* ── нить света ───────────────────────────────────────────────────── */
+function findAnchor() {
+  const p = G.p; let best = null, bs = 1e9;
+  for (const n of G.nodes) {
+    if (n === G.attached) continue;
+    const dx = n.x - p.x, dy = n.y - p.y, d = hypot(dx, dy);
+    if (d > RANGE) continue;
+    if (d < 96 * U) continue;          // слишком близко — будет «карусель» вместо дуги
+    if (dx < -70 * U) continue;
+    const s = d + (dx < 0 ? -dx * 1.7 : 0) - dx * 0.22 + Math.abs(dy) * 0.30
+            + Math.abs(d - 196 * U) * 0.20;
+    if (s < bs) { bs = s; best = n; }
+  }
+  return best;
+}
+function attach(n, silent) {
+  const p = G.p;
+  const d = hypot(p.x - n.x, p.y - n.y);
+  n.len = clamp(d, 72 * U, 302 * U);
+  n.taut = false; n.slackT = 0; n.grabT = G.t; n.flash = 1;
+  G.attached = n;
+  const sp = hypot(p.vx, p.vy) || 1;
+  p.vx += p.vx / sp * 96 * U; p.vy += p.vy / sp * 96 * U;
+  wave(n.x, n.y, 16 * U, 130 * U, G.hue + 26, 0.55);
+  if (!silent) { A.pluck(G.combo); TG.haptic('light'); }
+}
+function release(judge) {
+  const n = G.attached, p = G.p;
+  G.attached = null;
+  if (!n || !judge) return;
+  const sp = hypot(p.vx, p.vy);
+  if (!G.demo && n.taut && sp > 740 * U && (G.t - n.grabT) > 0.11) {
+    p.vx *= 1.145; p.vy *= 1.145;
+    const bonus = Math.round(20 + sp / (14 * U));
+    G.score += bonus; G.perfects++;
+    G.combo++; G.comboT = 2.6; G.maxCombo = Math.max(G.maxCombo, G.combo);
+    text(p.x, p.y - 34 * U, 'ИДЕАЛЬНО +' + bonus, G.hue + 40);
+    wave(p.x, p.y, 10 * U, 260 * U, G.hue + 60, 0.9);
+    G.flash = Math.min(1, G.flash + 0.22); G.hitStop = 0.045; A.perfect();
+    TG.haptic('medium');                      // «идеально» должно ощущаться пальцами
+  }
+}
+function holdPress() {
+  TG.gesture();                               // фуллскрин в WebView пускают только по жесту
+  if (G.state === 'title') { A.boot(); reset(false); TG.sync('play'); return; }
+  if (G.state === 'dead') { if (G.deadT > 0.55) { A.boot(); reset(false); TG.sync('play'); } return; }
+  if (G.state === 'pause') { setPause(false); return; }
+  A.boot();
+  G.hold = true; G.holdGap = 0;
+  if (!G.attached) { const n = findAnchor(); if (n) attach(n); }
+}
+function holdRelease() {
+  if (G.state === 'play' || G.state === 'title') { if (G.attached) release(G.state === 'play'); }
+  G.hold = false;
+}
+function setPause(on) {
+  if (on) {
+    if (G.state !== 'play') return;
+    G.state = 'pause'; G.hold = false;
+    if (G.attached) release(false);
+  } else if (G.state === 'pause') G.state = 'play';
+  TG.sync(G.state);
+}
+
+/* ── эффекты ──────────────────────────────────────────────────────── */
+function spark(x, y, n, hue, spd, life) {
+  for (let i = 0; i < n; i++) {
+    const a = rand(0, TAU), s = rand(0.25, 1) * spd;
+    G.parts.push({
+      x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, l: 1, k: rand(0.45, 1) * (life || 0.7),
+      r: rand(0.9, 2.6) * U, hue: hue + rand(-16, 16), g: rand(-1, 1)
+    });
+  }
+  if (G.parts.length > 900) G.parts.splice(0, G.parts.length - 900);
+}
+function wave(x, y, r0, r1, hue, a) { G.waves.push({ x, y, r0, r1, r: r0, hue, a, l: 1 }); }
+function text(x, y, s, hue) { G.texts.push({ x, y, s, hue, l: 1 }); }
+
+/* ══════════════════════════════════════════════════════════════════
+   ОБНОВЛЕНИЕ
+   ══════════════════════════════════════════════════════════════════ */
+function update(dt) {
+  G.t += dt;
+  const p = G.p;
+
+  // ── ИИ демо-режима (живой заголовок)
+  if (G.demo) {
+    G.aiT -= dt;
+    if (G.attached) {
+      const n = G.attached;
+      if ((p.vy < -110 * U && n.slackT > 0.05) || n.slackT > 0.34) { release(false); G.aiT = 0.09; }
+    } else if (G.aiT <= 0) {
+      const n = findAnchor(); if (n) attach(n, true); else G.aiT = 0.15;
+    }
+    if (p.y > seaY - 70 * U) { p.vy = -760 * U; p.vx = Math.max(p.vx, 520 * U); }
+  }
+
+  // ── физика игрока
+  p.vy += GRAV * dt;
+  if (G.attached) p.vx += WIND * dt;
+  const drag = G.attached ? 0.02 : 0.05;
+  p.vx -= p.vx * drag * dt; p.vy -= p.vy * drag * dt;
+  let sp = hypot(p.vx, p.vy);
+  if (sp > MAXV) { p.vx *= MAXV / sp; p.vy *= MAXV / sp; }
+  p.x += p.vx * dt; p.y += p.vy * dt;
+
+  // ── ограничение нити (неупругая верёвка) → чистая дуга
+  if (G.attached) {
+    const n = G.attached, dx = p.x - n.x, dy = p.y - n.y, d = hypot(dx, dy) || 1;
+    if (d > n.len) {
+      const nx = dx / d, ny = dy / d;
+      p.x = n.x + nx * n.len; p.y = n.y + ny * n.len;
+      const vr = p.vx * nx + p.vy * ny;
+      if (vr > 0) { p.vx -= nx * vr; p.vy -= ny * vr; }
+      n.taut = true; n.slackT = 0;
+    } else { n.taut = false; n.slackT += dt; }
+    // свет не даёт повиснуть на нити: если почти стоишь — мягко догоняет вперёд
+    if (hypot(p.vx, p.vy) < 110 * U) p.vx += 300 * U * dt;
+    // авто-роспуск: прошёл огонёк — дуга закончилась, дальше нить только тормозит.
+    // заодно лечит «карусель»: нельзя закрутиться на короткой нити и зависнуть
+    if (G.attached && n.taut && p.x > n.x + 50 * U && (G.t - n.grabT) > 0.24) release(false);
+    // авто-роспуск: дольше секунды на одном огоньке — это уже карусель,
+    // нить сама отпускает и несёт вперёд (новичок, держащий кнопку, улетает)
+    else if (G.hold && !G.demo && (G.t - n.grabT) > 0.95) release(false);
+    // подсказка: если нить провисла — сама тянется к ближайшему огоньку
+    if (G.hold && n.slackT > 0.34) {
+      const alt = findAnchor();
+      const dAlt = alt ? hypot(alt.x - p.x, alt.y - p.y) : 1e9;
+      if (alt && dAlt < d * 0.9) attach(alt);
+      else if (alt && n.slackT > 0.95) release(false);
+    }
+  } else if (G.hold && !G.demo) {
+    G.holdGap += dt;
+    if (G.holdGap > 0.12) { const n = findAnchor(); if (n) { attach(n); G.holdGap = 0; } }
+  }
+
+  // ── море и небо
+  if (p.y > seaY - p.r && p.vy > 0) {
+    // плоский «блин»: от воды реально отпрыгиваешь вверх, а не вязнешь в ней
+    p.y = seaY - p.r; p.vy = -Math.max(-p.vy * 0.62, 900 * U); p.vx = Math.max(p.vx * 0.99, 330 * U);
+    if (!G.demo) { A.splash(); G.shake = Math.max(G.shake, 7 * U); }
+    spark(p.x, seaY, 16, G.hue + 8, 340 * U, 0.85);
+    wave(p.x, seaY, 8 * U, 210 * U, G.hue + 10, 0.5);
+  }
+  if (p.y < ceilY + p.r && p.vy < 0) { p.y = ceilY + p.r; p.vy = -p.vy * 0.35; spark(p.x, p.y, 6, G.hue, 180 * U, 0.4); }
+  p.tilt = lerp(p.tilt, clamp(p.vy / (900 * U), -1, 1), 1 - Math.exp(-9 * dt));
+
+  // ── огоньки: мягкое отталкивание, вспышки
+  for (const n of G.nodes) {
+    n.flash *= Math.exp(-6 * dt);
+    const dx = p.x - n.x, dy = p.y - n.y, d = hypot(dx, dy), soft = n.r * 2.4;
+    if (d < soft && d > 0.001) {
+      const k = (1 - d / soft) * 260 * U * dt;
+      p.vx += dx / d * k; p.vy += dy / d * k;
+    }
+  }
+
+  // ── искры
+  const cr = 46 * U;
+  for (const s of G.sparks) {
+    if (s.got) continue;
+    if (hypot(p.x - s.x, p.y - s.y) < cr + p.r) {
+      s.got = true; G.got++;
+      if (!G.demo) {
+        // искры не гонят комбо — только держат его: ×N растёт на вратарях и идеальных
+        G.comboT = Math.max(G.comboT, 2.0);
+        G.score += 8 + Math.min(G.combo, 14) * 2;
+        A.spark(G.combo);
+      }
+      spark(s.x, s.y, 9, G.hue + 30, 200 * U, 0.5);
+      wave(s.x, s.y, 4 * U, 60 * U, G.hue + 34, 0.5);
+    }
+  }
+  // ── врата
+  for (const g of G.gates) {
+    g.pop *= Math.exp(-4 * dt);
+    if (!g.hit && hypot(p.x - g.x, p.y - g.y) < g.r * 0.92) {
+      g.hit = true; g.pop = 1;
+      if (!G.demo) {
+        G.gatesHit++; G.score += 260; G.combo += 2; G.comboT = 3.0;
+        G.maxCombo = Math.max(G.maxCombo, G.combo);
+        G.maxCombo = Math.max(G.maxCombo, G.combo);
+        text(g.x, g.y - g.r - 12 * U, '+Sияние +260', G.hue + 70);
+        G.flash = Math.min(1, G.flash + 0.30); G.hitStop = 0.05;
+        G.shake = Math.max(G.shake, 5 * U);
+        A.gate(); TG.haptic('medium');
+      }
+      spark(g.x, g.y, 34, G.hue + 60, 460 * U, 1.1);
+      wave(g.x, g.y, g.r * 0.5, g.r * 3.2, G.hue + 66, 0.9);
+    }
+  }
+
+  // ── комбо
+  if (G.comboT > 0) {
+    G.comboT -= dt;
+    if (G.comboT <= 0) { G.combo = 0; G.comboT = 0; }
+  }
+  const target = 192 + Math.min(1, G.combo / 22) * 128 + Math.sin(G.clock * 0.07) * 10;
+  G.hue = lerp(G.hue, target, 1 - Math.exp(-1.4 * dt));
+  // небо теплеет гораздо мягче, чем игрок — иначе атмосфера сваливается в кашу
+  G.hueSky = lerp(G.hueSky, 192 + Math.min(1, G.combo / 34) * 44 + Math.sin(G.clock * 0.05) * 9,
+    1 - Math.exp(-0.9 * dt));
+
+  // ── Тьма
+  if (!G.demo) {
+    G.run += dt;
+    G.dist = Math.max(G.dist, p.x - W * 0.36);
+    G.score += Math.max(0, p.vx) * dt / (9 * U);
+    // обогнать себя — самый сильный крючок
+    if (!G.demo && !G.beaten && G.best > 0 && G.score > G.best) {
+      G.beaten = true;
+      text(p.x, p.y - 58 * U, 'НОВЫЙ РЕКОРД', G.hue + 62);
+      wave(p.x, p.y, 20 * U, 430 * U, G.hue + 62, 1);
+      G.flash = Math.min(1, G.flash + 0.4); G.shake = Math.max(G.shake, 6 * U);
+      A.gate();
+    }
+    const gap = p.x - G.umbra;
+    // Тьма трогается плавно: первые секунды у новичка есть право на ошибку
+    const warm = clamp(0.3 + G.run / 9, 0.3, 1);
+    const base = 150 * U + Math.min(520 * U, G.dist / 24);
+    G.umbraV = lerp(G.umbraV, (base + clamp((gap - 700 * U) * 0.38, -70 * U, 74 * U)) * warm, 1 - Math.exp(-1.6 * dt));
+    G.umbra += G.umbraV * dt;
+    const dangerK = clamp(1 - (gap - 90 * U) / (520 * U), 0, 1);
+    G.dark = lerp(G.dark, dangerK, 1 - Math.exp(-4 * dt));
+    A.danger(G.dark);
+    // страховка от патологического расхождения: Тьма не гуляет дальше трёх экранов
+    if (p.x - G.umbra > 3400 * U) G.umbra = p.x - 3400 * U;
+    if (p.x - p.r * 2 < G.umbra) die();
+  } else {
+    G.umbra = p.x - 4000 * U; G.dark = lerp(G.dark, 0, 1 - Math.exp(-3 * dt));
+  }
+
+  // ── камера никогда не едет назад и не прячет Тьму
+  const want = Math.max(p.x - W * 0.36, G.umbra + 60 * U);
+  if (want > G.cam) G.cam = lerp(G.cam, want, 1 - Math.exp(-9 * dt));
+  G.cam = Math.max(G.cam, G.umbra + 40 * U);
+  genAhead();
+
+  // ── след
+  const lastT = G.trail[G.trail.length - 1];
+  if (!lastT || hypot(p.x - lastT.x, p.y - lastT.y) > 4 * U)
+    G.trail.push({ x: p.x, y: p.y, l: 1, hue: G.hue });
+  if (G.trail.length > 54) G.trail.shift();
+  for (const t of G.trail) t.l -= dt * 1.5;
+
+  // ── частицы / волны / тексты
+  for (const q of G.parts) {
+    q.vy += 260 * U * q.g * dt; q.vx *= 1 - 1.4 * dt; q.vy *= 1 - 1.2 * dt;
+    q.x += q.vx * dt; q.y += q.vy * dt; q.l -= dt / q.k;
+  }
+  G.parts = G.parts.filter(q => q.l > 0);
+  for (const w of G.waves) { w.l -= dt * 1.5; w.r = lerp(w.r, w.r1, 1 - Math.exp(-6 * dt)); }
+  G.waves = G.waves.filter(w => w.l > 0);
+  for (const t of G.texts) { t.l -= dt * 0.85; t.y -= 34 * U * dt; }
+  G.texts = G.texts.filter(t => t.l > 0);
+
+  G.shake *= Math.exp(-7 * dt);
+  G.flash *= Math.exp(-4.2 * dt);
+  if (G.tip > 0) G.tip -= dt;
+}
+
+function die() {
+  if (G.state === 'dead') return;
+  G.state = 'dead'; G.deadT = 0; G.attached = null; G.hold = false;
+  const p = G.p;
+  p.vx *= 0.2; p.vy = -200 * U;
+  G.shake = 16 * U; G.flash = 0.9;
+  spark(p.x, p.y, 90, G.hue - 20, 620 * U, 1.6);
+  wave(p.x, p.y, 10 * U, 520 * U, G.hue, 1);
+  A.die(); A.danger(0); TG.haptic('lose');
+  const sc = Math.floor(G.score);
+  if (sc > G.best) { G.best = sc; try { localStorage.setItem('radiance.best', String(sc)); } catch (e) { } }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   РЕНДЕР
+   ══════════════════════════════════════════════════════════════════ */
+function bg(t) {
+  const h = G.hueSky;
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0.00, hsl(h + 16, 58, 6));
+  g.addColorStop(0.42, hsl(h + 4, 52, 9));
+  g.addColorStop(0.80, hsl(h - 12, 46, 5));
+  g.addColorStop(1.00, hsl(h - 24, 40, 3));
+  ctx.fillStyle = g; ctx.fillRect(-40, -40, W + 80, H + 80);   // с запасом: кадр не надо очищать
+
+  // звёзды
+  ctx.save();
+  for (const s of stars) {
+    const x = (((s.x - G.cam * s.z / W) % 1) + 1) % 1 * W;
+    const y = s.y * H * 0.9;
+    const tw = 0.55 + 0.45 * Math.sin(t * s.tw + s.ph);
+    ctx.fillStyle = hsl(h + 30, 60, 92, 0.65 * tw * (0.3 + s.z * 2));
+    ctx.beginPath(); ctx.arc(x, y, s.r, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+
+  // северное сияние
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (let b = 0; b < 4; b++) {
+    const bh = h + 18 + b * 26;
+    const base = H * (0.16 + b * 0.10), amp = H * (0.05 + b * 0.03);
+    const par = 0.05 + b * 0.035;
+    const grd = ctx.createLinearGradient(0, base - H * 0.22, 0, base + H * 0.30);
+    grd.addColorStop(0, hsl(bh, 92, 62, 0));
+    grd.addColorStop(0.45, hsl(bh, 90, 56, 0.105 - b * 0.014));
+    grd.addColorStop(1, hsl(bh, 90, 50, 0));
+    ctx.fillStyle = grd;
+    ctx.beginPath(); ctx.moveTo(-20, H);
+    for (let x = -20; x <= W + 20; x += 22) {
+      const u = (x + G.cam * par) * 0.0042;
+      const y = base + Math.sin(u * 1.7 + t * 0.21 + b * 1.9) * amp
+                     + Math.sin(u * 3.4 - t * 0.13 + b) * amp * 0.42;
+      ctx.lineTo(x, y);
+    }
+    for (let x = W + 20; x >= -20; x -= 22) {
+      const u = (x + G.cam * par) * 0.0042;
+      const y = base + H * 0.20 + Math.sin(u * 1.5 + t * 0.17 + b * 2.4) * amp * 0.7;
+      ctx.lineTo(x, y);
+    }
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+
+  // парящая пыль
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (const m of motes) {
+    const x = (((m.x - G.cam * m.z / W) % 1.2) + 1.2) % 1.2 / 1.2 * W * 1.2 - W * 0.1;
+    const y = m.y * H + Math.sin(t * m.sp + m.ph) * 14 * U;
+    const a = 0.20 + 0.20 * Math.sin(t * 1.3 + m.ph);
+    const gr = ctx.createRadialGradient(x, y, 0, x, y, m.r * 6);
+    gr.addColorStop(0, hsl(h + 24, 90, 78, a)); gr.addColorStop(1, hsl(h + 24, 90, 60, 0));
+    ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(x, y, m.r * 6, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function sea(t) {
+  const h = G.hueSky;
+  const g = ctx.createLinearGradient(0, seaY - 6, 0, H);
+  g.addColorStop(0, hsl(h + 6, 60, 16, 0.95));
+  g.addColorStop(0.22, hsl(h - 4, 62, 9, 0.98));
+  g.addColorStop(1, hsl(h - 20, 55, 3, 1));
+  ctx.fillStyle = g; ctx.fillRect(-40, seaY - 6, W + 80, H - seaY + 46);
+
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+  for (let i = 0; i < 7; i++) {
+    const y = seaY + 6 + i * i * 2.6 + i * 4;
+    const a = 0.20 * (1 - i / 7.5);
+    ctx.strokeStyle = hsl(h + 22 - i * 3, 90, 66, a);
+    ctx.lineWidth = 1.4 * U;
+    ctx.beginPath();
+    for (let x = -10; x <= W + 10; x += 14) {
+      const u = (x + G.cam * (0.5 + i * 0.06)) * 0.01;
+      const yy = y + Math.sin(u * 1.6 + t * (0.7 + i * 0.12)) * (2 + i * 1.4) * U;
+      if (x === -10) ctx.moveTo(x, yy); else ctx.lineTo(x, yy);
+    }
+    ctx.stroke();
+  }
+  // блип отражения игрока
+  const p = G.p, px = p.x - G.cam, d = clamp(1 - (seaY - p.y) / (300 * U), 0, 1);
+  if (d > 0.01 && px > -100 && px < W + 100) {
+    const gr = ctx.createRadialGradient(px, seaY + 30 * U, 0, px, seaY + 30 * U, 150 * U);
+    gr.addColorStop(0, hsl(G.hue + 30, 95, 70, 0.30 * d)); gr.addColorStop(1, hsl(G.hue + 30, 95, 60, 0));
+    ctx.fillStyle = gr; ctx.save(); ctx.translate(px, seaY + 26 * U); ctx.scale(1, 0.28);
+    ctx.beginPath(); ctx.arc(0, 0, 150 * U, 0, TAU); ctx.fill(); ctx.restore();
+  }
+  ctx.restore();
+
+  // линия горизонта — тонкая светящаяся нить
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  const lg = ctx.createLinearGradient(0, seaY - 12 * U, 0, seaY + 12 * U);
+  lg.addColorStop(0, hsl(h + 30, 95, 70, 0)); lg.addColorStop(0.5, hsl(h + 34, 95, 72, 0.5));
+  lg.addColorStop(1, hsl(h + 30, 95, 70, 0));
+  ctx.fillStyle = lg; ctx.fillRect(0, seaY - 12 * U, W, 24 * U);
+  ctx.restore();
+}
+
+function drawGates(t) {
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+  for (const g of G.gates) {
+    const x = g.x - G.cam; if (x < -g.r * 2 || x > W + g.r * 2) continue;
+    const h = G.hue + 56, pulse = 0.72 + 0.28 * Math.sin(t * 1.7 + g.ph);
+    const gr = ctx.createRadialGradient(x, g.y, g.r * 0.55, x, g.y, g.r * 1.5);
+    gr.addColorStop(0, hsl(h, 95, 62, (g.hit ? 0.05 : 0.11) * pulse));
+    gr.addColorStop(1, hsl(h, 95, 60, 0));
+    ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(x, g.y, g.r * 1.5, 0, TAU); ctx.fill();
+
+    ctx.save(); ctx.translate(x, g.y); ctx.rotate(t * 0.28 + g.ph);
+    ctx.strokeStyle = hsl(h, 96, 72, (g.hit ? 0.18 : 0.62) * pulse);
+    ctx.lineWidth = 2.4 * U;
+    ctx.setLineDash([g.r * 0.42, g.r * 0.30]);
+    ctx.beginPath(); ctx.arc(0, 0, g.r, 0, TAU); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.strokeStyle = hsl(h + 20, 96, 80, (g.hit ? 0.14 : 0.40));
+    ctx.lineWidth = 1.2 * U;
+    ctx.beginPath(); ctx.arc(0, 0, g.r * 0.82, 0.4, 0.4 + 2.1); ctx.stroke();
+    ctx.beginPath(); ctx.arc(0, 0, g.r * 0.82, 3.6, 3.6 + 2.1); ctx.stroke();
+    ctx.restore();
+
+    if (g.pop > 0.01) {
+      ctx.strokeStyle = hsl(h + 30, 96, 86, g.pop * 0.8);
+      ctx.lineWidth = 3 * U * g.pop;
+      ctx.beginPath(); ctx.arc(x, g.y, g.r * (1 + (1 - g.pop) * 2.4), 0, TAU); ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+function drawNodes(t) {
+  const near = findAnchor();
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+  for (const n of G.nodes) {
+    const x = n.x - G.cam; if (x < -200 * U || x > W + 200 * U) continue;
+    const h = G.hue + 24;
+    const active = n === G.attached, target = n === near;
+    const pulse = 0.8 + 0.2 * Math.sin(t * 2.1 + n.seed);
+    const glow = (active ? 3.4 : target ? 2.5 : 1.7) * (1 + n.flash * 0.8);
+    const R = n.r * glow * 2.6;
+    const gr = ctx.createRadialGradient(x, n.y, 0, x, n.y, R);
+    gr.addColorStop(0, hsl(h, 96, 78, 0.55 * pulse));
+    gr.addColorStop(0.30, hsl(h + 12, 96, 62, 0.20 * pulse));
+    gr.addColorStop(1, hsl(h + 12, 96, 60, 0));
+    ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(x, n.y, R, 0, TAU); ctx.fill();
+
+    // лепестки
+    const rot = t * n.spin + n.seed;
+    ctx.save(); ctx.translate(x, n.y); ctx.rotate(rot);
+    for (let i = 0; i < n.pet; i++) {
+      const a = i / n.pet * TAU;
+      const L = n.r * (1.9 + 0.5 * Math.sin(t * 1.6 + i + n.seed)) * (1 + n.flash * 0.5);
+      ctx.strokeStyle = hsl(h + 26, 96, 80, 0.42 * pulse);
+      ctx.lineWidth = 1.5 * U;
+      ctx.beginPath(); ctx.moveTo(Math.cos(a) * n.r * 0.4, Math.sin(a) * n.r * 0.4);
+      ctx.lineTo(Math.cos(a) * L, Math.sin(a) * L); ctx.stroke();
+      ctx.fillStyle = hsl(h + 40, 96, 88, 0.7 * pulse);
+      ctx.beginPath(); ctx.arc(Math.cos(a) * L, Math.sin(a) * L, 1.5 * U, 0, TAU); ctx.fill();
+    }
+    ctx.restore();
+
+    // ядро
+    ctx.fillStyle = hsl(h + 40, 100, 96, 0.95);
+    ctx.beginPath(); ctx.arc(x, n.y, n.r * 0.62 * (1 + n.flash * 0.5), 0, TAU); ctx.fill();
+
+    if (target && !active) {
+      ctx.strokeStyle = hsl(h + 40, 96, 84, 0.35 * pulse);
+      ctx.lineWidth = 1.2 * U;
+      ctx.beginPath(); ctx.arc(x, n.y, n.r * 3.1 + 4 * U * Math.sin(t * 3), 0, TAU); ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+function drawSparks(t) {
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (const s of G.sparks) {
+    if (s.got) continue;
+    const x = s.x - G.cam; if (x < -40 * U || x > W + 40 * U) continue;
+    const y = s.y + Math.sin(t * 2 + s.ph) * 4 * U;
+    const a = 0.65 + 0.35 * Math.sin(t * 3 + s.ph);
+    const R = s.r * 4.3;
+    const gr = ctx.createRadialGradient(x, y, 0, x, y, R);
+    gr.addColorStop(0, hsl(G.hue + 44, 98, 86, 0.72 * a));
+    gr.addColorStop(0.35, hsl(G.hue + 30, 98, 66, 0.16 * a));
+    gr.addColorStop(1, hsl(G.hue + 30, 98, 60, 0));
+    ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(x, y, R, 0, TAU); ctx.fill();
+    ctx.fillStyle = hsl(G.hue + 50, 100, 96, a);
+    ctx.beginPath(); ctx.arc(x, y, s.r * 0.5, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawRope(t) {
+  const n = G.attached; if (!n) return;
+  const p = G.p, px = p.x - G.cam, nx = n.x - G.cam;
+  const h = G.hue + 46;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+  const mx = (px + nx) / 2, my = (p.y + n.y) / 2;
+  const d = hypot(px - nx, p.y - n.y);
+  const wob = n.taut ? 3 * U : 12 * U;
+  const ex = mx + Math.sin(t * 9) * wob * (p.y > n.y ? 1 : -1) * 0.6;
+  const ey = my + Math.cos(t * 7.5) * wob;
+  const gr = ctx.createLinearGradient(px, p.y, nx, n.y);
+  gr.addColorStop(0, hsl(h, 98, 88, 0.92));
+  gr.addColorStop(0.5, hsl(h + 10, 98, 72, 0.42));
+  gr.addColorStop(1, hsl(h + 20, 98, 78, 0.7));
+  ctx.strokeStyle = gr; ctx.lineWidth = (n.taut ? 2.3 : 1.4) * U;
+  ctx.beginPath(); ctx.moveTo(px, p.y); ctx.quadraticCurveTo(ex, ey, nx, n.y); ctx.stroke();
+  ctx.strokeStyle = hsl(h + 30, 100, 95, 0.30); ctx.lineWidth = 0.8 * U;
+  ctx.beginPath(); ctx.moveTo(px, p.y); ctx.quadraticCurveTo(ex, ey, nx, n.y); ctx.stroke();
+  // бисеринки вдоль нити
+  for (let i = 1; i < 7; i++) {
+    const u = ((t * 0.9 + i / 7) % 1), iu = 1 - u;
+    const bx = iu * iu * px + 2 * iu * u * ex + u * u * nx;
+    const by = iu * iu * p.y + 2 * iu * u * ey + u * u * n.y;
+    ctx.fillStyle = hsl(h + 34, 100, 92, 0.75 * Math.sin(u * Math.PI));
+    ctx.beginPath(); ctx.arc(bx, by, 1.7 * U, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawPlayer(t) {
+  const p = G.p, x = p.x - G.cam, h = G.hue;
+  const spd = hypot(p.vx, p.vy) / MAXV;
+
+  // след
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (let i = 1; i < G.trail.length; i++) {
+    const a0 = G.trail[i - 1], a1 = G.trail[i];
+    const k = i / G.trail.length;
+    ctx.strokeStyle = hsl(a1.hue + 18 * k, 96, 68, 0.26 * k * k);
+    ctx.lineWidth = (0.6 + k * 9 * U) * (0.5 + spd);
+    ctx.beginPath(); ctx.moveTo(a0.x - G.cam, a0.y); ctx.lineTo(a1.x - G.cam, a1.y); ctx.stroke();
+  }
+  ctx.restore();
+
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  // аура скорости
+  const R = p.r * (7 + spd * 9 + Math.sin(t * 6) * 0.5);
+  const gr = ctx.createRadialGradient(x, p.y, 0, x, p.y, R);
+  gr.addColorStop(0, hsl(h + 34, 100, 92, 0.95));
+  gr.addColorStop(0.22, hsl(h + 24, 100, 72, 0.42));
+  gr.addColorStop(0.6, hsl(h, 100, 60, 0.14));
+  gr.addColorStop(1, hsl(h, 100, 55, 0));
+  ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(x, p.y, R, 0, TAU); ctx.fill();
+
+  // «крылья» — две дуги поперёк движения
+  const ang = Math.atan2(p.vy, p.vx);
+  ctx.translate(x, p.y); ctx.rotate(ang);
+  const wing = p.r * (2.6 + spd * 3.2);
+  ctx.strokeStyle = hsl(h + 44, 100, 88, 0.45);
+  ctx.lineWidth = 1.6 * U;
+  ctx.beginPath(); ctx.ellipse(0, 0, wing * 1.5, wing * 0.62, 0, -0.9, 0.9); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(0, 0, wing * 1.5, wing * 0.62, 0, Math.PI - 0.9, Math.PI + 0.9); ctx.stroke();
+  ctx.rotate(-ang);
+  // ядро
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.arc(0, 0, p.r * 0.9, 0, TAU); ctx.fill();
+  ctx.restore();
+}
+
+function drawParts() {
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (const q of G.parts) {
+    const x = q.x - G.cam, a = clamp(q.l, 0, 1);
+    ctx.fillStyle = hsl(q.hue, 96, 74, 0.85 * a);
+    ctx.beginPath(); ctx.arc(x, q.y, q.r * (0.4 + a), 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+function drawWaves() {
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (const w of G.waves) {
+    const a = clamp(w.l, 0, 1) * w.a;
+    ctx.strokeStyle = hsl(w.hue, 96, 78, 0.55 * a);
+    ctx.lineWidth = 2.4 * U * a;
+    ctx.beginPath(); ctx.arc(w.x - G.cam, w.y, w.r, 0, TAU); ctx.stroke();
+  }
+  ctx.restore();
+}
+function drawTexts() {
+  ctx.save();
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const tx of G.texts) {
+    const a = clamp(tx.l, 0, 1);
+    ctx.font = `600 ${Math.round(15 * U)}px 'Segoe UI',sans-serif`;
+    ctx.fillStyle = hsl(tx.hue, 96, 88, a);
+    ctx.shadowColor = hsl(tx.hue, 96, 70, a); ctx.shadowBlur = 16 * U;
+    ctx.fillText(tx.s, tx.x - G.cam, tx.y);
+  }
+  ctx.restore();
+}
+
+function drawUmbra(t) {
+  const x0 = G.umbra - G.cam;
+  if (x0 < -30) return;
+  const h = G.hue;
+  const edge = 260 * U;
+  ctx.save();
+  const g = ctx.createLinearGradient(x0 - edge, 0, x0 + 30 * U, 0);
+  g.addColorStop(0, 'rgba(2,3,9,0.99)');
+  g.addColorStop(0.62, 'rgba(3,4,12,0.94)');
+  g.addColorStop(1, 'rgba(4,6,16,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(-40, -40, Math.max(0, x0 + 30 * U) + 40, H + 80);
+
+  // щупальца Тьмы на границе
+  ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 7; i++) {
+    const y = H * (0.08 + i * 0.13);
+    const amp = 30 * U * (0.5 + Math.abs(Math.sin(t * 0.6 + i)));
+    ctx.strokeStyle = hsl(h + 200, 70, 55, 0.16 + 0.1 * Math.sin(t * 1.4 + i));
+    ctx.lineWidth = (1 + i % 3) * U;
+    ctx.beginPath();
+    for (let k = 0; k <= 8; k++) {
+      const yy = y + k * 12 * U;
+      const xx = x0 - 10 * U + Math.sin(t * (1.1 + i * 0.1) + k * 0.7 + i) * amp * (1 - k / 10);
+      if (k === 0) ctx.moveTo(xx, yy); else ctx.lineTo(xx, yy);
+    }
+    ctx.stroke();
+  }
+  // кромка
+  const eg = ctx.createLinearGradient(x0 - 60 * U, 0, x0 + 26 * U, 0);
+  eg.addColorStop(0, hsl(h + 190, 90, 60, 0));
+  eg.addColorStop(1, hsl(h + 196, 96, 66, 0.30 + 0.16 * Math.sin(t * 2.2)));
+  ctx.fillStyle = eg; ctx.fillRect(x0 - 60 * U, 0, 86 * U, H);
+  ctx.restore();
+}
+
+/* ── HUD / экраны ─────────────────────────────────────────────────── */
+function ui(t) {
+  const pad = Math.round(clamp(W * 0.035, 16, 42));
+  const s1 = Math.round(clamp(W * 0.021, 15, 27));
+  ctx.save();
+  ctx.textBaseline = 'top';
+
+  if (G.state !== 'title') {
+    ctx.textAlign = 'left';
+    const meters = Math.floor(G.dist / (11 * U));
+    ctx.fillStyle = 'rgba(226,244,255,0.94)';
+    ctx.font = `300 ${s1}px 'Segoe UI',sans-serif`;
+    ctx.shadowColor = hsl(G.hue + 20, 96, 60, 0.9); ctx.shadowBlur = 18;
+    ctx.fillText(meters + ' м', pad, pad);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(190,220,240,0.40)';
+    ctx.font = `500 ${Math.round(s1 * 0.46)}px 'Segoe UI',sans-serif`;
+    ctx.fillText('Д И С Т А Н Ц И Я', pad, pad + s1 * 1.25);
+
+    ctx.textAlign = 'right';
+    ctx.fillStyle = 'rgba(210,232,250,0.55)';
+    ctx.font = `300 ${Math.round(s1 * 0.72)}px 'Segoe UI',sans-serif`;
+    ctx.fillText(Math.floor(G.score).toLocaleString('ru-RU'), W - pad, pad);
+    ctx.fillStyle = 'rgba(190,220,240,0.30)';
+    ctx.font = `500 ${Math.round(s1 * 0.40)}px 'Segoe UI',sans-serif`;
+    ctx.fillText('С Ч Ё Т   ·   РЕКОРД ' + G.best.toLocaleString('ru-RU'), W - pad, pad + s1 * 1.0);
+
+    // комбо
+    if (G.combo > 1) {
+      const cs = Math.round(s1 * (1.1 + Math.min(1.1, G.combo * 0.09)));
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.fillStyle = hsl(G.hue + 40, 98, 90, 0.95);
+      ctx.shadowColor = hsl(G.hue + 40, 98, 66, 0.9); ctx.shadowBlur = 26;
+      ctx.font = `200 ${cs}px 'Segoe UI',sans-serif`;
+      ctx.fillText('×' + G.combo, W / 2, pad * 0.8);
+      ctx.shadowBlur = 0;
+      const bw = 110 * U;
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.fillRect(W / 2 - bw / 2, pad * 0.8 + cs + 8, bw, 2);
+      ctx.fillStyle = hsl(G.hue + 40, 98, 74, 0.8);
+      ctx.fillRect(W / 2 - bw / 2, pad * 0.8 + cs + 8, bw * clamp(G.comboT / 2.6, 0, 1), 2);
+    }
+
+    if (G.tip > 0 && G.state === 'play') {
+      const a = clamp(G.tip / 2.2, 0, 1) * 0.8;
+      ctx.textAlign = 'center';
+      ctx.fillStyle = `rgba(220,240,255,${a})`;
+      ctx.font = `400 ${Math.round(15 * U)}px 'Segoe UI',sans-serif`;
+      ctx.fillText('держи — нить вспыхнет   ·   отпусти на дуге — полетишь выше', W / 2, H * 0.13);
+    }
+  }
+
+  // предупреждение о Тьме
+  if (G.dark > 0.06 && G.state === 'play') {
+    const a = G.dark;
+    const g = ctx.createLinearGradient(0, 0, W * 0.5, 0);
+    g.addColorStop(0, `rgba(120,20,60,${0.30 * a})`); g.addColorStop(1, 'rgba(120,20,60,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W * 0.5, H);
+    if (a > 0.62) {
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillStyle = `rgba(255,${180 - a * 90},${190 - a * 60},${(a - 0.62) * 1.9 * (0.6 + 0.4 * Math.sin(t * 12))})`;
+      ctx.font = `600 ${Math.round(13 * U)}px 'Segoe UI',sans-serif`;
+      ctx.fillText('Т Ь М А   П О  З А Д И', W / 2, H * 0.9);
+    }
+  }
+  ctx.restore();
+}
+
+function titleScreen(t) {
+  const cx = W / 2, cy = H * 0.40;
+  const s = clamp(W * 0.115, 44, 148);
+  ctx.save();
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+  ctx.globalAlpha = 0.26;
+  ctx.fillStyle = hsl(G.hue + 26, 96, 66, 1);
+  ctx.font = `100 ${s}px 'Segoe UI',sans-serif`;
+  ctx.shadowColor = hsl(G.hue + 30, 100, 60, 0.95); ctx.shadowBlur = 72;
+  ctx.fillText('С И Я Н И Е', cx + Math.sin(t * 0.7) * 2, cy);
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
+  ctx.shadowColor = hsl(G.hue + 40, 100, 68, 0.95); ctx.shadowBlur = 60;
+  ctx.fillStyle = 'rgba(252,254,255,0.98)';
+  ctx.font = `100 ${s}px 'Segoe UI',sans-serif`;
+  ctx.fillText('С И Я Н И Е', cx, cy);
+  ctx.shadowBlur = 0;
+
+  ctx.fillStyle = 'rgba(196,226,246,0.62)';
+  ctx.font = `300 ${Math.round(clamp(W * 0.019, 13, 22))}px 'Segoe UI',sans-serif`;
+  ctx.fillText('скользящий свет сквозь полярную ночь', cx, cy + s * 0.62);
+
+  const a = 0.5 + 0.5 * Math.sin(t * 2.1);
+  ctx.fillStyle = `rgba(228,246,255,${0.42 + 0.4 * a})`;
+  ctx.font = `400 ${Math.round(clamp(W * 0.022, 14, 26))}px 'Segoe UI',sans-serif`;
+  ctx.fillText(WORD_TAP, cx, H * 0.70);
+
+  ctx.fillStyle = 'rgba(190,220,240,0.30)';
+  ctx.font = `400 ${Math.round(clamp(W * 0.015, 11, 17))}px 'Segoe UI',sans-serif`;
+  ctx.fillText('одна кнопка · держи нить к огоньку, отпусти в дуге · за тобой Тьма', cx, H * 0.765);
+  if (G.best > 0) {
+    ctx.fillStyle = hsl(G.hue + 34, 90, 80, 0.55);
+    ctx.fillText('лучший полёт — ' + G.best.toLocaleString('ru-RU'), cx, H * 0.815);
+  }
+  ctx.restore();
+}
+
+function deadScreen(t) {
+  const k = clamp(G.deadT / 0.7, 0, 1), e = 1 - Math.pow(1 - k, 3);
+  ctx.save();
+  ctx.fillStyle = `rgba(3,4,11,${0.62 * e})`;
+  ctx.fillRect(0, 0, W, H);
+  ctx.globalAlpha = e;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const cx = W / 2, s = clamp(W * 0.045, 26, 58);
+
+  ctx.fillStyle = 'rgba(250,240,244,0.96)';
+  ctx.shadowColor = 'rgba(255,120,150,0.7)'; ctx.shadowBlur = 40;
+  ctx.font = `100 ${s}px 'Segoe UI',sans-serif`;
+  ctx.fillText('С В Е Т   П О Г А С', cx, H * 0.30);
+  ctx.shadowBlur = 0;
+
+  const rows = [
+    ['Дистанция', Math.floor(G.dist / (11 * U)) + ' м'],
+    ['Счёт', Math.floor(G.score).toLocaleString('ru-RU')],
+    ['Макс. комбо', '×' + G.maxCombo],
+    ['Искр собрано', G.got + '   ·   Врат ' + G.gatesHit + '   ·   Идеально ' + G.perfects],
+  ];
+  const fs = clamp(W * 0.019, 13, 21);
+  rows.forEach((r, i) => {
+    const y = H * 0.44 + i * fs * 2.2;
+    ctx.textAlign = 'right'; ctx.fillStyle = 'rgba(190,220,240,0.45)';
+    ctx.font = `400 ${Math.round(fs)}px 'Segoe UI',sans-serif`;
+    ctx.fillText(r[0], cx - 14, y);
+    ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(238,250,255,0.95)';
+    ctx.font = `300 ${Math.round(fs * (i === 1 ? 1.35 : 1))}px 'Segoe UI',sans-serif`;
+    ctx.fillText(r[1], cx + 14, y);
+  });
+
+  const isBest = Math.floor(G.score) >= G.best && G.best > 0;
+  ctx.textAlign = 'center';
+  if (isBest) {
+    ctx.fillStyle = hsl(G.hue + 40, 96, 86, 0.9);
+    ctx.font = `600 ${Math.round(fs * 0.95)}px 'Segoe UI',sans-serif`;
+    ctx.fillText('Н О В Ы Й   Р Е К О Р Д', cx, H * 0.44 + rows.length * fs * 2.2 + fs);
+  }
+  const a = 0.5 + 0.5 * Math.sin(t * 2.4);
+  ctx.fillStyle = `rgba(228,246,255,${0.35 + 0.4 * a})`;
+  ctx.font = `400 ${Math.round(fs * 1.05)}px 'Segoe UI',sans-serif`;
+  // в Telegram внизу живёт кнопка «ПОДЕЛИТЬСЯ» — не лезем под неё
+  ctx.fillText(WORD_TAP2, cx, H * (TG.mainShown() ? 0.78 : 0.86));
+  ctx.restore();
+}
+
+function pauseScreen() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(3,5,12,0.55)'; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = 'rgba(248,252,255,0.95)';
+  ctx.font = `100 ${clamp(W * 0.04, 24, 52)}px 'Segoe UI',sans-serif`;
+  ctx.fillText('П А У З А', W / 2, H / 2 - 14);
+  ctx.fillStyle = 'rgba(190,220,240,0.5)';
+  ctx.font = `400 ${Math.round(clamp(W * 0.016, 12, 18))}px 'Segoe UI',sans-serif`;
+  ctx.fillText(TOUCH ? (TG.inTG ? 'КОСНИСЬ ЭКРАНА ИЛИ «НАЗАД» — продолжить' : 'КОСНИСЬ ЭКРАНА — продолжить')
+                     : 'P — продолжить        M — звук ' + (A.muted ? 'выкл' : 'вкл'), W / 2, H / 2 + 34);
+  ctx.restore();
+}
+
+function post(t) {
+  // вспышка
+  if (G.flash > 0.01) {
+    ctx.save(); ctx.globalCompositeOperation = 'lighter';
+    ctx.fillStyle = hsl(G.hue + 36, 96, 78, 0.28 * G.flash);
+    ctx.fillRect(0, 0, W, H); ctx.restore();
+  }
+  // виньетка + зерно — один запечённый слой, один blit один в один
+  if (postLayer) {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = 0.62 + G.dark * 0.22;
+    ctx.drawImage(postLayer, 0, 0);
+    ctx.restore();
+  }
+}
+
+function render(t) {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const sh = G.shake;
+  if (sh > 0.4) ctx.translate(rand(-sh, sh), rand(-sh, sh));
+
+  bg(t);
+  sea(t);
+  drawGates(t);
+  drawSparks(t);
+  drawWaves();
+  drawNodes(t);
+  drawRope(t);
+  drawParts();
+  if (G.state !== 'dead' || G.deadT < 1.6) drawPlayer(t);
+  drawTexts();
+  drawUmbra(t);
+  post(t);
+
+  // ── Экраны/HUD — отдельный холст в родном разрешении устройства:
+  //    мир мягкий и рисуется дешевле, а текст остаётся острым
+  ctx = uctx;
+  ctx.setTransform(DPRU, 0, 0, DPRU, SI.l * DPRU, SI.t * DPRU);
+  const Wc = W, Hc = H;
+  ctx.clearRect(-SI.l, -SI.t, Wc + SI.l + SI.r, Hc + SI.t + SI.b);
+  W = Wc - SI.l - SI.r; H = Hc - SI.t - SI.b;   // HUD жмётся внутри безопасной рамки
+  ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over'; ctx.shadowBlur = 0;
+  if (G.state === 'title') titleScreen(t);
+  else if (G.state === 'dead') { ui(t); deadScreen(t); }
+  else if (G.state === 'pause') pauseScreen();
+  else ui(t);
+  W = Wc; H = Hc;
+  ctx = gctx;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   ЦИКЛ
+   ══════════════════════════════════════════════════════════════════ */
+const STEP = 1 / 120;
+let last = performance.now(), acc = 0, syncT = 0;
+// Авто-масштаб внутреннего разрешения мира: на слабом железе тихонько
+// уползает вниз (до 0.7), как только появляется запас — возвращается.
+// UI-слой в этом не участвует: он всегда в родном разрешении.
+let def = 0, win = 0, fastWin = 0, goodWins = 0, pCool = 3, upOk = true, upT = 0;
+function autoScale(dt) {
+  if (G.state !== 'play') { pCool = 1; return; }  // за экранами не следим: там дорог HUD, а не мир
+  if (upT > 0) upT -= dt;
+  if (pCool > 0) { pCool -= dt; return; }
+  const d = clamp(dt, 0.001, 0.05);          // выбросы (свёрнутая вкладка) не учитываем
+  def += Math.max(0, d - 0.0195);            // «недобор» до 60 fps
+  if (d < 0.0185) fastWin += d;
+  win += d;
+  if (win < 4) return;                       // решение раз в 4 секунды — без дёрганья
+  if (def > 0.5 && SCALE > 0.7) {
+    if (upT > 0) upOk = false;               // возвращать качество уже не за чем
+    SCALE = Math.max(0.7, +(SCALE - 0.15).toFixed(2));
+    pCool = 2; goodWins = 0; resize();
+  } else if (upOk && SCALE < 1 && fastWin > win * 0.95) {
+    if (++goodWins >= 4) {                   // 16 с подряд честных 60 — одна попытка вверх
+      SCALE = Math.min(1, +(SCALE + 0.15).toFixed(2));
+      pCool = 1; upT = 12; goodWins = 0; resize();
+    }
+  } else goodWins = 0;
+  def = 0; win = 0; fastWin = 0;
+}
+function frame(now) {
+  let dt = (now - last) / 1000; last = now;
+  if (dt > 0.25) dt = 0.25;
+  G.clock += dt;
+  // Портрет телефона: под экраном «поверни» мир должен стоять, а не умирать
+  if (PORTRAIT.matches && G.state === 'play') setPause(true);
+  if ((syncT -= dt) <= 0) { syncT = 0.3; TG.sync(G.state); }
+  autoScale(dt);
+  if (G.state === 'pause') { /* мир стоит */ }
+  else if (G.state === 'dead') { G.deadT += dt; updateDead(dt); }
+  else if (G.hitStop > 0) { G.hitStop -= dt; }
+  else {
+    acc += dt;
+    let guard = 0;
+    while (acc >= STEP && guard++ < 8) { update(STEP); acc -= STEP; }
+    if (guard >= 8) acc = 0;
+  }
+  render(G.clock);
+  requestAnimationFrame(frame);
+}
+function updateDead(dt) {
+  const p = G.p;
+  p.vy += GRAV * 0.4 * dt; p.x += p.vx * dt; p.y += p.vy * dt;
+  G.umbra += (G.umbraV * 0.4) * dt;
+  G.umbra = Math.min(G.umbra, p.x + 420 * U);
+  for (const q of G.parts) {
+    q.vy += 200 * U * q.g * dt; q.x += q.vx * dt; q.y += q.vy * dt; q.l -= dt / q.k;
+  }
+  G.parts = G.parts.filter(q => q.l > 0);
+  for (const w of G.waves) { w.l -= dt * 1.2; w.r = lerp(w.r, w.r1, 1 - Math.exp(-5 * dt)); }
+  G.waves = G.waves.filter(w => w.l > 0);
+  for (const tx of G.texts) { tx.l -= dt * 0.8; tx.y -= 30 * U * dt; }
+  G.texts = G.texts.filter(tx => tx.l > 0);
+  G.shake *= Math.exp(-6 * dt); G.flash *= Math.exp(-4 * dt);
+  if (G.cam < G.umbra + 40 * U) G.cam = lerp(G.cam, G.umbra + 40 * U, 1 - Math.exp(-3 * dt));
+}
+
+/* ── ввод ─────────────────────────────────────────────────────────── */
+window.addEventListener('pointerdown', e => {
+  if (e.button !== undefined && e.button !== 0) return;
+  holdPress();
+}, { passive: true });
+window.addEventListener('pointerup', () => holdRelease());
+window.addEventListener('pointercancel', () => holdRelease());
+window.addEventListener('keydown', e => {
+  const k = (e.key || '').toLowerCase();
+  const code = e.code || '';
+  if (e.code === 'Space' || k === 'arrowup' || k === 'w') {
+    e.preventDefault();
+    if (!e.repeat) holdPress();
+  } else if (k === 'p' || k === 'escape' || code === 'Escape') {
+    setPause(G.state === 'play');
+    if (G.state === 'pause' && TG.inTG) TG.haptic('light');
+  } else if (k === 'm') {
+    A.boot(); A.setMuted(!A.muted);
+  } else if (k === 'r') {
+    if (G.state === 'play' || G.state === 'dead' || G.state === 'pause') { A.boot(); reset(false); }
+  }
+});
+window.addEventListener('keyup', e => {
+  const k = (e.key || '').toLowerCase();
+  if (e.code === 'Space' || k === 'arrowup' || k === 'w') holdRelease();
+});
+document.addEventListener('contextmenu', e => e.preventDefault());
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) setPause(true);
+});
+window.addEventListener('blur', () => {
+  G.hold = false; if (G.state === 'play') setPause(true);
+});
+
+/* ── Telegram: аппаратная «Назад» = пауза, кнопка клиента = поделиться ── */
+TG.onBack(() => {
+  if (G.state === 'play') setPause(true);
+  else if (G.state === 'pause') setPause(false);
+  else if (G.state === 'dead' && G.deadT > 0.55) { A.boot(); reset(false); }
+});
+TG.onShare(() => TG.share(Math.floor(G.score), Math.floor(G.dist / (11 * U))));
+TG.onViewport(() => resize());
+const onPortrait = () => { if (PORTRAIT.matches) setPause(true); };
+if (PORTRAIT.addEventListener) PORTRAIT.addEventListener('change', onPortrait);
+else if (PORTRAIT.addListener) PORTRAIT.addListener(onPortrait);
+
+/* ── старт ────────────────────────────────────────────────────────── */
+resize(); buildField(); reset(true);
+requestAnimationFrame(t => { last = t; frame(t); });
+</script>
+</body>
+</html>
