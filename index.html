@@ -17,18 +17,43 @@
   #c, #u { display: block; position: fixed; inset: 0; width: 100%; height: 100%; }
   #u { pointer-events: none; z-index: 2; }
   #c.play { cursor: none; }
+  /* Нижняя полоса: кнопка меню слева, подсказка по центру — они физически
+     не могут наехать друг на друга, потому что лежат в одном флексе */
+  #bar {
+    position: fixed; left: 0; right: 0; z-index: 3;
+    bottom: calc(7px + env(safe-area-inset-bottom, 0px));
+    display: flex; align-items: center; gap: 10px; padding: 0 12px;
+    pointer-events: none;
+  }
   #hint {
-    position: fixed; left: 50%; bottom: calc(14px + env(safe-area-inset-bottom, 0px));
-    transform: translateX(-50%); z-index: 3;
-    color: rgba(180,215,235,.34); font-size: 11px; letter-spacing: .2em; text-transform: uppercase;
-    pointer-events: none; text-align: center; max-width: 94vw; line-height: 1.7;
+    flex: 1; min-width: 0; color: rgba(180,215,235,.34); font-size: 11px;
+    letter-spacing: .2em; text-transform: uppercase; pointer-events: none;
+    text-align: center; line-height: 1.7;
   }
   #hint b { color: rgba(190,240,255,.6); font-weight: 600; }
+  #mbtn {
+    pointer-events: auto; flex: none; width: 36px; height: 36px; padding: 0;
+    display: grid; place-items: center; cursor: pointer;
+    font: 400 16px/1 'Segoe UI', sans-serif; color: rgba(190,235,255,.72);
+    background: rgba(10,18,34,.5); border: 1px solid rgba(140,215,255,.22);
+    border-radius: 11px; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    opacity: .55; transition: opacity .2s, border-color .2s, box-shadow .2s;
+  }
+  #mbtn:hover, #mbtn:focus-visible { opacity: 1; border-color: rgba(150,225,255,.6); box-shadow: 0 0 22px rgba(90,190,255,.28); outline: none; }
+  /* пока меню открыто, кнопка не нужна: пусть не мешает и не лежит поверх шторки */
+  #mbtn.on { opacity: 0; pointer-events: none; }
   @media (max-width: 560px) {
-    #hint { font-size: 8.5px; letter-spacing: .1em; bottom: calc(8px + env(safe-area-inset-bottom, 0px)); }
+    #hint { font-size: 8.5px; letter-spacing: .1em; }
+    #mbtn { width: 31px; height: 31px; font-size: 14px; }
+  }
+  /* Палец: кнопка должна быть крупной и заметной — на телефоне это единственный вход в меню */
+  @media (hover: none) and (pointer: coarse) {
+    #bar { bottom: calc(11px + env(safe-area-inset-bottom, 0px)); }
+    #hint { font-size: 9.5px; letter-spacing: .12em; color: rgba(180,215,235,.42); }
+    #mbtn { width: 48px; height: 48px; font-size: 21px; border-radius: 14px; opacity: .95; }
   }
 
-  /* Экрaн «переверни телефон»: только телефон + портрет (приём из Tanks) */
+  /* Экран «переверни телефон»: только телефон + портрет */
   #rotate {
     position: fixed; inset: 0; z-index: 50; display: none;
     flex-direction: column; align-items: center; justify-content: center; gap: 3.6vh;
@@ -54,14 +79,108 @@
   }
   @media screen and (orientation: portrait) and (hover: none) and (pointer: coarse) {
     #rotate { display: flex; }
+    /* подсказка про мышь тут ни к чему, а кнопка меню остаётся: выход должен быть доступен всегда */
+    #bar { z-index: 56; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); }
     #hint { display: none; }
+  }
+
+  /* ── МЕНЮ ─────────────────────────────────────────────────────────── */
+  #menu {
+    position: fixed; inset: 0; z-index: 52; display: none;
+    align-items: center; justify-content: center; padding: 16px;
+    background: rgba(2,4,10,.72); backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px);
+  }
+  #menu.open { display: flex; }
+  .sheet {
+    width: min(560px, 96vw); max-height: min(88svh, 720px); display: flex; flex-direction: column;
+    background: linear-gradient(180deg, rgba(14,24,44,.96), rgba(6,10,20,.97));
+    border: 1px solid rgba(140,215,255,.20); border-radius: 16px;
+    box-shadow: 0 30px 90px rgba(0,0,0,.6), inset 0 0 60px rgba(60,140,200,.07);
+    color: #e6f4ff; overflow: hidden;
+  }
+  .sheet h2 {
+    margin: 0; padding: 15px 20px 12px; font-size: 13px; font-weight: 300;
+    letter-spacing: .34em; text-align: center; color: #d3ecff;
+    border-bottom: 1px solid rgba(140,215,255,.14);
+  }
+  .tabs { display: flex; border-bottom: 1px solid rgba(140,215,255,.12); }
+  .tabs button {
+    flex: 1; padding: 11px 4px; cursor: pointer; color: rgba(190,225,245,.5);
+    font: 400 10px/1 'Segoe UI', sans-serif; letter-spacing: .22em; text-transform: uppercase;
+    background: none; border: 0; border-bottom: 2px solid transparent; transition: .18s;
+  }
+  .tabs button:hover { color: #eaf7ff; }
+  .tabs button.on { color: #eaf7ff; border-bottom-color: hsl(196,90%,60%); background: rgba(60,150,210,.08); }
+  .body { padding: 6px 20px 18px; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+  .body::-webkit-scrollbar { width: 8px; }
+  .body::-webkit-scrollbar-thumb { background: rgba(140,215,255,.2); border-radius: 8px; }
+  .row {
+    display: flex; align-items: center; gap: 14px; padding: 13px 2px;
+    border-bottom: 1px solid rgba(140,215,255,.08);
+  }
+  #menu [hidden] { display: none !important; }   /* flex-строки перебивают [hidden] без этого */
+  .row:last-child { border-bottom: 0; }
+  .row .t { flex: 1; min-width: 0; font-size: 14px; font-weight: 300; letter-spacing: .04em; }
+  .row .s { display: block; margin-top: 3px; font-size: 10.5px; letter-spacing: .08em; color: rgba(180,215,235,.42); }
+  .sw {
+    flex: none; width: 52px; height: 26px; padding: 0; cursor: pointer; border-radius: 13px;
+    background: rgba(150,190,225,.14); border: 1px solid rgba(140,215,255,.2);
+    position: relative; transition: .2s;
+  }
+  .sw::after {
+    content: ''; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px;
+    border-radius: 50%; background: rgba(200,230,250,.75); transition: .2s;
+  }
+  .sw.on { background: hsla(196,90%,55%,.35); border-color: hsla(196,95%,70%,.7); box-shadow: 0 0 16px rgba(80,190,255,.3) inset; }
+  .sw.on::after { left: 28px; background: #ecfaff; box-shadow: 0 0 12px rgba(150,225,255,.9); }
+  input[type=range] {
+    flex: none; width: 118px; height: 22px; margin: 0; -webkit-appearance: none; appearance: none; background: none;
+  }
+  input[type=range]::-webkit-slider-runnable-track { height: 3px; border-radius: 3px; background: rgba(150,200,235,.28); }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 15px; height: 15px; margin-top: -6px; border-radius: 50%;
+    background: #dff4ff; box-shadow: 0 0 12px rgba(130,215,255,.8); cursor: pointer;
+  }
+  input[type=range]::-moz-range-track { height: 3px; border-radius: 3px; background: rgba(150,200,235,.28); }
+  input[type=range]::-moz-range-thumb { width: 15px; height: 15px; border: 0; border-radius: 50%; background: #dff4ff; }
+  .btns { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 16px; }
+  .b {
+    flex: 1 1 auto; min-width: 120px; padding: 12px 14px; cursor: pointer;
+    font: 400 11px/1 'Segoe UI', sans-serif; letter-spacing: .2em; text-transform: uppercase;
+    color: #eaf7ff; background: rgba(60,150,210,.10);
+    border: 1px solid rgba(140,215,255,.26); border-radius: 11px; transition: .18s;
+  }
+  .b:hover { background: rgba(70,170,230,.2); border-color: rgba(160,230,255,.6); box-shadow: 0 0 22px rgba(80,190,255,.22); }
+  .b.warn { color: #ffdfe6; border-color: rgba(255,140,165,.3); background: rgba(200,60,90,.12); }
+  .b.warn:hover { background: rgba(220,70,100,.24); border-color: rgba(255,160,180,.7); box-shadow: 0 0 22px rgba(255,110,140,.2); }
+  .b:disabled { opacity: .35; cursor: default; box-shadow: none; }
+  .rec { display: flex; align-items: baseline; gap: 10px; padding: 10px 2px; border-bottom: 1px solid rgba(140,215,255,.08); }
+  .rec .i { width: 26px; flex: none; font-size: 11px; color: rgba(180,215,235,.4); }
+  .rec .sc { width: 84px; flex: none; font-size: 19px; font-weight: 200; color: #eefaff; }
+  .rec .d { flex: 1; min-width: 0; font-size: 10.5px; letter-spacing: .07em; color: rgba(180,215,235,.45); }
+  .rec.me { background: hsla(196,90%,60%,.09); border-radius: 8px; }
+  .rec.me .sc { color: hsl(196,95%,80%); }
+  .empty { padding: 26px 4px; text-align: center; font-size: 12px; letter-spacing: .12em; color: rgba(180,215,235,.35); }
+  #bye {
+    position: fixed; inset: 0; z-index: 53; display: none;
+    flex-direction: column; align-items: center; justify-content: center; gap: 3vh; text-align: center;
+    background: radial-gradient(130% 95% at 50% 40%, #0b1226 0%, #04060d 74%); color: #eaf6ff;
+  }
+  #bye.on { display: flex; }
+  #bye .g { font-size: clamp(17px,5vw,30px); font-weight: 100; letter-spacing: .22em; }
+  #bye .s { font-size: clamp(11px,3vw,14px); letter-spacing: .08em; color: rgba(190,220,240,.5); max-width: 34ch; line-height: 1.8; }
+  @media (max-width: 560px) {
+    .sheet { width: 100%; max-height: 94svh; border-radius: 13px; }
+    .row .t { font-size: 12.5px; }
+    input[type=range] { width: 92px; }
+    .rec .sc { width: 66px; font-size: 16px; }
   }
 </style>
 <script>
 /* ══════════════════════════════════════════════════════════════════════
    TELEGRAM MINI APP.
-   Всё главное идёт через нативный мост клиента (тот же приём, что и в
-   Tanks: TelegramWebviewProxy.postEvent → external.invoke → postMessage),
+   Всё главное идёт через нативный мост клиента:
+   TelegramWebviewProxy.postEvent → external.invoke → postMessage,
    поэтому игра остаётся одним файлом и работает даже без сети и без
    telegram-web-app.js. Официальный SDK догружается асинхронно и нужен
    только для входящих событий: «Назад» = пауза и кнопка «ПОДЕЛИТЬСЯ».
@@ -185,9 +304,15 @@ const TG = (function () {
     bridge('web_app_share_score', { score: String(score), message: message });
   }
 
+  function close() {                             // выход из игры
+    if (sdk && sdk.close) { try { sdk.close(); return true; } catch (e) {} }
+    if (inTG) { bridge('close'); bridge('web_app_close'); return true; }
+    return false;
+  }
+
   const api = {
     inTG: inTG, mobile: mobile, proxy: proxy, mainShown: function () { return mainShown; },
-    gesture: gesture, sync: sync, haptic: haptic, share: share,
+    gesture: gesture, sync: sync, haptic: haptic, share: share, close: close,
     onViewport: function (f) { vpCbs.push(f); },
     onBack: function (f) { backCb = f; if (sdk && sdk.BackButton && state !== 'title') { try { sdk.BackButton.show(); } catch (e) {} } },
     onShare: function (f) { shareCb = f; }
@@ -204,7 +329,57 @@ const TG = (function () {
   <div class="rt">ПОВЕРНИ ТЕЛЕФОН</div>
   <div class="rs">Сияние летит только горизонтально.<br>Поверни устройство — игра подождёт.</div>
 </div>
-<div id="hint"><b>ЛКМ / ПРОБЕЛ</b> — нить света &nbsp;·&nbsp; P — пауза &nbsp;·&nbsp; M — звук</div>
+<div id="bar">
+  <button id="mbtn" aria-label="Меню игры" title="Меню — Esc">&#9776;</button>
+  <div id="hint"><b>ЛКМ / ПРОБЕЛ</b> — нить света &nbsp;·&nbsp; P — пауза &nbsp;·&nbsp; ESC — меню</div>
+</div>
+
+<div id="menu" role="dialog" aria-modal="true" aria-label="Меню игры">
+  <div class="sheet">
+    <h2>С &nbsp;И&nbsp; Я&nbsp; Н&nbsp; И&nbsp; Е</h2>
+    <div class="tabs" role="tablist">
+      <button class="on" data-tab="opts">Настройки</button>
+      <button data-tab="rec">Рекорды</button>
+      <button data-tab="how">Как летать</button>
+    </div>
+    <div class="body">
+      <div data-pane="opts">
+        <div class="row"><div class="t">Музыка<span class="s" id="m-sub">выключена</span></div><button class="sw" id="sw-music" aria-label="Музыка"></button></div>
+        <div class="row"><div class="t">Громкость музыки<span class="s">Тише под гул Тьмы — само</span></div><input type="range" id="m-vol" min="0" max="100" step="5" value="55" aria-label="Громкость музыки"></div>
+        <div class="row"><div class="t">Следующий трек<span class="s">полка лежит в папке music/</span></div><button class="b" id="m-skip" style="flex:0 0 auto;min-width:0">Далее</button></div>
+        <div class="row"><div class="t">Звуки<span class="s" id="s-sub">включены</span></div><button class="sw" id="sw-sfx" aria-label="Звуки"></button></div>
+        <div class="row"><div class="t">Тряска экрана<span class="s">удары о воду, вспышки, гибель</span></div><button class="sw" id="sw-shake" aria-label="Тряска экрана"></button></div>
+        <div class="row" id="r-hap"><div class="t">Виброотдача<span class="s">работает в Telegram на телефоне</span></div><button class="sw" id="sw-hap" aria-label="Виброотдача"></button></div>
+        <div class="btns">
+          <button class="b" id="b-resume">Продолжить</button>
+          <button class="b" id="b-restart">Заново</button>
+          <button class="b warn" id="b-exit">Выйти</button>
+          <button class="b" id="b-exit-no" hidden>Отмена</button>
+        </div>
+      </div>
+      <div data-pane="rec" hidden>
+        <div id="rec-list"></div>
+        <div class="btns"><button class="b" id="b-clear">Очистить рекорды</button></div>
+      </div>
+      <div data-pane="how" hidden>
+        <div class="row"><div class="t">Держи<span class="s">ЛКМ, ПРОБЕЛ или палец — нить сама тянется к ближайшему огоньку</span></div></div>
+        <div class="row"><div class="t">Отпусти<span class="s">на верхней точке дуги — летишь дальше и быстрее. Это «Идеально»</span></div></div>
+        <div class="row"><div class="t">Ряды зацепок<span class="s">трамвай идёт ярусами: вверху разгон больше, но и падать дольше</span></div></div>
+        <div class="row"><div class="t">Врата и искры<span class="s">искры держат комбо, врата ×2 и +260</span></div></div>
+        <div class="row"><div class="t">Тьма<span class="s">единственная смерть. Высоту она не уважает и не устаёт</span></div></div>
+        <div class="row"><div class="t">Клавиши<span class="s">P — пауза · ESC — меню · M — звук · R — заново</span></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="bye">
+  <div class="g">С В Е Т &nbsp; З А Ж А Т</div>
+  <div class="s">Игра помнит твой полёт. Вкладку можно закрыть —<br>или вернуться, пока Тьма не догнала.</div>
+  <button class="b" id="b-back" style="flex:0 0 auto;min-width:0">Вернуться</button>
+</div>
+<!-- Полка с музыкой: список треков. Положил mp3 в music/ — дописал имя сюда. -->
+<script src="music/tracks.js"></script>
 <script>
 "use strict";
 /* ══════════════════════════════════════════════════════════════════════
@@ -377,6 +552,10 @@ const A = {
       setTimeout(() => this.note(392 * Math.pow(2, n / 12), 0.34, 0.05, 'triangle'), i * 26));
   },
   splash() { this.noise(0.42, 900, 120, 0.09, 0.6); this.note(120, 0.28, 0.05, 'sine', 0, 60); },
+  ui(hi) {                                    // клик по интерфейсу: коротко и по-доброму
+    this.note(hi ? 660 : 494, 0.13, 0.03, 'sine');
+    this.note(hi ? 988 : 740, 0.1, 0.018, 'sine', 0.035);
+  },
   die() {
     this.noise(1.5, 700, 40, 0.16, 0.5);
     [0, -2, -5, -9].forEach((n, i) =>
@@ -385,8 +564,203 @@ const A = {
 };
 
 /* ══════════════════════════════════════════════════════════════════
-   МИР
-   ══════════════════════════════════════════════════════════════════ */
+    НАСТРОЙКИ · МУЗЫКА · РЕКОРДЫ · МЕНЮ
+    ══════════════════════════════════════════════════════════════════ */
+const LS = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) { } }
+};
+const OPT = {
+  music: LS.get('radiance.music', '0') === '1',
+  sfx:   LS.get('radiance.sfx',   '1') === '1',
+  shake: LS.get('radiance.shake', '1') === '1',
+  hap:   LS.get('radiance.hap',   '1') === '1',
+  vol:   clamp(parseFloat(LS.get('radiance.mvol', '0.55')) || 0, 0, 1),
+  save() {
+    LS.set('radiance.music', OPT.music ? '1' : '0');
+    LS.set('radiance.sfx', OPT.sfx ? '1' : '0');
+    LS.set('radiance.shake', OPT.shake ? '1' : '0');
+    LS.set('radiance.hap', OPT.hap ? '1' : '0');
+    LS.set('radiance.mvol', String(OPT.vol));
+  }
+};
+A.muted = !OPT.sfx;                       // до первого boot(): тишина так тишина
+const hap = k => { if (OPT.hap) TG.haptic(k); };
+
+/* ── музыка: всё, что лежит в music/ и перечислено в music/tracks.js ──
+   Игра сама ничего не «сканирует» — браузер не умеет смотреть в папку,
+   поэтому полка описана списком. Добавил mp3 → дописал строку → готово. */
+const MU = {
+  el: null, list: [], bad: {}, i: -1, want: false, dead: false,
+  init() {
+    if (this.list.length) return;
+    const src = (window.MUSIC_TRACKS && window.MUSIC_TRACKS.length)
+      ? window.MUSIC_TRACKS : ['Infinite_Pursuit.mp3', 'Polar_Velocity.mp3'];
+    this.list = src.map(t => {
+      t = String(t).trim().replace(/\\/g, '/');
+      return t.charAt(0) === '/' || t.indexOf('.') === 0 || t.indexOf('music/') === 0 || /^https?:/.test(t) ? t : 'music/' + t;
+    });
+  },
+  boot() {
+    if (this.el || this.dead || !this.list.length) return;
+    const el = this.el = new Audio();
+    el.preload = 'auto'; el.volume = 0;
+    el.addEventListener('ended', () => this.pick(true));
+    el.addEventListener('error', () => { if (this.i >= 0) this.bad[this.i] = 1; this.pick(true, true); });
+  },
+  good() { const g = []; for (let i = 0; i < this.list.length; i++) if (!this.bad[i]) g.push(i); return g; },
+  pick(auto, wasBad) {
+    this.boot(); if (!this.el) return;
+    const g = this.good();
+    if (!g.length) { this.dead = true; this.el.pause(); MENU.paint(); return; }
+    let i = g[(Math.random() * g.length) | 0];
+    if (g.length > 1 && i === this.i) i = g[(g.indexOf(i) + 1) % g.length];
+    this.i = i; this.want = true; this.el.volume = 0;
+    this.el.src = this.list[i];
+    this.play();
+    MENU.paint();
+  },
+  play() {
+    if (!this.el || this.dead || !OPT.music) return;
+    const p = this.el.play();
+    if (p && p.catch) p.catch(() => { this.want = true; });   // не пускают до жеста — дождёмся жеста
+    MENU.paint();
+  },
+  start() {                                            // только по жесту: autoplay никто не любит
+    if (!OPT.music || this.dead) return;
+    this.init();
+    if (!this.el) { this.pick(); return; }              // первый трек — случайный
+    if (this.el.ended || this.el.paused) { this.want = true; this.play(); }
+  },
+  off() { this.want = false; if (this.el) { this.el.pause(); this.el.volume = 0; } MENU.paint(); },
+  name() {
+    if (this.dead || !this.list.length) return 'папка music/ пуста';
+    if (this.i < 0) return 'включи — заиграет вразноброс';
+    return decodeURIComponent(this.list[this.i].split('/').pop()).replace(/\.[a-z0-9]+$/i, '');
+  },
+  on() { return OPT.music && this.el && !this.el.paused && this.el.volume > 0.01; },
+  duck(dt) {                                           // Тьма близко — музыка отходит на второй план
+    const el = this.el; if (!el) return;
+    const t = OPT.music ? OPT.vol * (1 - 0.45 * G.dark) * (G.state === 'dead' ? 0.5 : 1) : 0;
+    if (Math.abs(t - el.volume) < 0.004) return;
+    el.volume = clamp(lerp(el.volume, t, 1 - Math.exp(-(t > el.volume ? 2.2 : 5.5) * dt)), 0, 1);
+  }
+};
+
+/* ── рекорды: топ-8 полётов, живёт в localStorage ───────────────────── */
+const REC = {
+  list: [],
+  load() {
+    try { const a = JSON.parse(LS.get('radiance.records', '[]')); if (Array.isArray(a)) this.list = a; } catch (e) { }
+  },
+  push(r) {
+    this.list.push(r);
+    this.list.sort((a, b) => b.s - a.s);
+    if (this.list.length > 8) this.list.length = 8;
+    LS.set('radiance.records', JSON.stringify(this.list));
+  },
+  clear() { this.list = []; LS.set('radiance.records', '[]'); }
+};
+REC.load();
+
+const D = id => document.getElementById(id);
+const MENU = {
+  open: false, wasPlay: false, tab: 'opts', asked: false,
+  root: D('menu'), mbtn: D('mbtn'), bye: D('bye'),
+  show(tab) {
+    if (this.open && tab) this.paint(tab);
+    if (this.open) return;
+    this.open = true; this.asked = false;
+    if (G.state === 'play') { this.wasPlay = true; setPause(true); } else this.wasPlay = false;
+    if (TG.inTG && TG.mobile) hap('light');
+    this.root.classList.add('open'); this.mbtn.classList.add('on');
+    this.root.setAttribute('aria-hidden', 'false');
+    D('b-exit').textContent = 'Выйти'; D('b-exit-no').hidden = true;
+    this.paint(tab || this.tab);
+    A.boot(); A.ui && A.ui(1);
+  },
+  hide() {
+    if (!this.open) return;
+    this.open = false; this.asked = false;
+    this.root.classList.remove('open'); this.mbtn.classList.remove('on');
+    this.root.setAttribute('aria-hidden', 'true');
+    D('b-exit').textContent = 'Выйти'; D('b-exit-no').hidden = true;
+    if (this.wasPlay) { this.wasPlay = false; setPause(false); }
+  },
+  paint(tab) {
+    if (tab) this.tab = tab;
+    const q = s => this.root.querySelector(s);
+    this.root.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === this.tab));
+    this.root.querySelectorAll('[data-pane]').forEach(p => { p.hidden = p.dataset.pane !== this.tab; });
+    q('#sw-music').classList.toggle('on', OPT.music);
+    q('#sw-sfx').classList.toggle('on', OPT.sfx);
+    q('#sw-shake').classList.toggle('on', OPT.shake);
+    q('#sw-hap').classList.toggle('on', OPT.hap);
+    q('#r-hap').hidden = !TG.mobile;
+    q('#m-vol').value = String(Math.round(OPT.vol * 100));
+    q('#m-sub').textContent = OPT.music ? (MU.on() ? 'играет — ' + MU.name() : 'ждёт касания · ' + MU.name()) : 'выключена';
+    q('#m-skip').disabled = MU.dead || !MU.list.length;
+    q('#s-sub').textContent = OPT.sfx ? 'включены' : 'выключены';
+    q('#b-resume').textContent = G.state === 'title' ? 'Играть' : G.state === 'dead' ? 'Закрыть' : 'Продолжить';
+    if (this.tab === 'rec') this.paintRec();
+  },
+  paintRec() {
+    const box = D('rec-list'), l = REC.list;
+    if (!l.length) { box.innerHTML = '<div class="empty">Пока ни одного полёта.<br>Тьма ещё не видела твоих рекордов.</div>'; return; }
+    box.innerHTML = l.map((r, i) => {
+      const d = new Date(r.t || 0);
+      const when = r.t ? d.toLocaleDateString('ru-RU', { day: '2-digit', month: 'short' }) + ' · ' + d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '';
+      return '<div class="rec' + (i === 0 ? ' me' : '') + '"><div class="i">' + (i + 1) + '.</div>' +
+        '<div class="sc">' + (r.s | 0).toLocaleString('ru-RU') + '</div>' +
+        '<div class="d">' + (r.m | 0) + ' м · ×' + (r.c | 0) + ' комбо · ' + (r.g | 0) + ' искр · ' + (r.gt | 0) + ' врат' +
+        (when ? '<br>' + when : '') + '</div></div>';
+    }).join('');
+  },
+  exit() {
+    MU.off();
+    if (TG.close()) { /* клиент закроет сам */ }
+    try { window.close(); } catch (e) { }
+    setTimeout(() => { this.hide(); this.bye.classList.add('on'); }, 600);
+  }
+};
+
+/* ── связываем кнопки ─────────────────────────────────────────────────── */
+(function bindMenu() {
+  const q = s => document.querySelector(s);
+  MENU.mbtn.addEventListener('pointerdown', e => e.stopPropagation());
+  MENU.mbtn.addEventListener('click', () => { MENU.open ? MENU.hide() : MENU.show(); });
+  MENU.root.querySelectorAll('.tabs button').forEach(b =>
+    b.addEventListener('click', () => MENU.paint(b.dataset.tab)));
+  MENU.root.addEventListener('pointerdown', e => {
+    if (e.target === MENU.root) MENU.hide();      // клик по затемнению
+  });
+  q('#sw-music').addEventListener('click', () => {
+    OPT.music = !OPT.music; OPT.save();
+    if (OPT.music) { A.boot(); MU.start(); } else MU.off();
+    MENU.paint();
+  });
+  q('#m-vol').addEventListener('input', e => { OPT.vol = clamp(e.target.value / 100, 0, 1); OPT.save(); MU.duck(1); });
+  q('#m-skip').addEventListener('click', () => { MU.pick(false); MENU.paint(); });
+  q('#sw-sfx').addEventListener('click', () => {
+    OPT.sfx = !OPT.sfx; OPT.save(); A.boot(); A.setMuted(!OPT.sfx); MENU.paint();
+  });
+  q('#sw-shake').addEventListener('click', () => { OPT.shake = !OPT.shake; OPT.save(); MENU.paint(); });
+  q('#sw-hap').addEventListener('click', () => { OPT.hap = !OPT.hap; OPT.save(); hap('light'); MENU.paint(); });
+  q('#b-resume').addEventListener('click', () => {
+    if (G.state === 'title') { MENU.hide(); A.boot(); MU.start(); reset(false); TG.sync('play'); }
+    else MENU.hide();
+  });
+  q('#b-restart').addEventListener('click', () => { MENU.hide(); A.boot(); MU.start(); reset(false); });
+  q('#b-exit').addEventListener('click', () => {
+    if (!MENU.asked) {
+      MENU.asked = true; q('#b-exit').textContent = 'Точно выйти?'; q('#b-exit-no').hidden = false;
+    } else MENU.exit();
+  });
+  q('#b-exit-no').addEventListener('click', () => { MENU.asked = false; q('#b-exit').textContent = 'Выйти'; q('#b-exit-no').hidden = true; });
+  q('#b-clear').addEventListener('click', () => { REC.clear(); G.best = 0; LS.set('radiance.best', '0'); MENU.paintRec(); });
+  D('b-back').addEventListener('click', () => { MENU.bye.classList.remove('on'); MENU.show('opts'); });
+})();
+
 const G = {
   state: 'title',          // title | play | dead | pause
   cam: 0, t: 0, clock: 0, run: 0,
@@ -395,7 +769,7 @@ const G = {
   attached: null, hold: false, holdGap: 0,
   umbra: 0, umbraV: 0, dist: 0, score: 0, combo: 0, comboT: 0, maxCombo: 0,
   got: 0, gatesHit: 0, perfects: 0, beaten: false,
-  best: 0, genX: 0, lastY: 0, nodeN: 0,
+  best: 0, genX: 0, lastY: 0, nodeN: 0, lv: 3, lvGoal: 3, lvRest: 0, topOpen: false,
   shake: 0, hitStop: 0, flash: 0, dark: 0, hue: 192, hueSky: 192,
   deadT: 0, tip: 0, demo: true, aiT: 0,
 };
@@ -439,17 +813,55 @@ function buildPost() {
 }
 
 /* ── генерация тропы ─────────────────────────────────────────────── */
+/* ЯРУСЫ ЗАЦЕПОК. ROWF[0] — самый верхний ярус, последний — самый нижний.
+   Вся лесенка стоит ровно в той же полосе, где раньше гулял один ряд,
+   поэтому физика, дальность нити и Тьма остались как были.
+   Верхний ярус открывается по дистанции, а самый-самый верхний — ещё и
+   с шансом: потому «всего 4 уровня вверх, иногда 5». */
+const ROWF = [0.115, 0.225, 0.34, 0.455, 0.565, 0.665];
+const ROW_BOT = ROWF.length - 1;              // самый нижний ярус; старт — индекс 3
+function topRow() {
+  const d = G.dist / U;
+  if (d < 900) return 3;                      // старт: три яруса, как раньше
+  if (d < 2600) return 2;
+  if (d < 5200) return 1;                     // четыре уровня вверх — обычная высота
+  return G.topOpen ? 0 : 1;                   // а пятый — как подарок не каждому
+}
+function newGoal() {
+  const lo = topRow();
+  if (ROW_BOT - lo < 1) { G.lvGoal = G.lv; G.lvRest = 3; return; }
+  const r = Math.random();
+  // вверх охотнее: лесенка должна звать наверх, а не гулять по полу
+  if (r < 0.62) G.lvGoal = lo;                                            // рывок к потолку
+  else if (r < 0.86) G.lvGoal = Math.max(lo, G.lv - 2 - ((Math.random() * 2) | 0));
+  else G.lvGoal = ROW_BOT;                                                // вниз, перевести дух
+  if (G.lvGoal === G.lv) G.lvGoal = G.lv === lo ? ROW_BOT : lo;
+}
+function nextRow() {
+  if (G.nodeN < 7) return G.lv;
+  const lo = topRow();
+  if (G.lvGoal < lo) G.lvGoal = lo;               // потолок мог открыться позже
+  if (G.lv === G.lvGoal) {
+    if (G.lvRest > 0) { G.lvRest--; return G.lv; }// на ярусе стоит немного, потом снова вверх
+    newGoal();
+    return G.lv;
+  }
+  const nl = G.lv + (G.lvGoal > G.lv ? 1 : -1);
+  if (nl === G.lvGoal) G.lvRest = 2 + ((Math.random() * 4) | 0);
+  return nl;
+}
 function addNode() {
   const ramp = clamp(G.dist / (11000 * U), 0, 1);
   // мягкая прокачка самому старту: первые огоньки близко и по одной высоте
   const ease = clamp((G.nodeN - 1) / 5, 0, 1);
-  const gap = rand(300, 425) * U * lerp(0.8, 1, ease) * (1 + ramp * 0.42);
+  const lv = nextRow(), step = lv - G.lv;
+  G.lv = lv;
+  const gap = rand(300, 425) * U * lerp(0.8, 1, ease) * (1 + ramp * 0.42) * (step ? 0.88 : 1);
   const x = G.genX + gap;
-  let y = G.lastY + rand(-1, 1) * rand(45, 165) * U * lerp(0.42, 1, ease);
-  y = clamp(y, H * 0.15, H * 0.70);
+  const y = clamp(H * ROWF[lv] + rand(-11, 11) * U, H * 0.11, seaY - 96 * U);
   const prev = G.nodes[G.nodes.length - 1];
   const n = {
-    x, y, r: 12 * U, len: 0, taut: false, slackT: 0, grabT: 0,
+    x, y, lv, r: 12 * U, len: 0, taut: false, slackT: 0, grabT: 0,
     seed: Math.random() * 1000, pet: 5 + ((Math.random() * 3) | 0), spin: rand(-0.5, 0.5),
     flash: 0, born: G.clock
   };
@@ -489,7 +901,10 @@ function genAhead() {
 
 function reset(demo) {
   G.demo = demo;
-  G.cam = 0; G.genX = 0; G.lastY = H * 0.26; G.nodeN = 0;
+  G.cam = 0; G.genX = 0; G.nodeN = 0;
+  G.lv = 3; G.lvGoal = 3; G.lvRest = 6;         // старт — средний ярус
+  G.topOpen = Math.random() < 0.5;              // «иногда 5 уровней» решается один раз на полёт
+  G.lastY = H * ROWF[G.lv];
   G.nodes = []; G.sparks = []; G.gates = []; G.parts = []; G.waves = []; G.texts = []; G.trail = [];
   const p = G.p;
   p.x = W * 0.36; p.y = H * 0.34; p.vx = 560 * U; p.vy = 40 * U; p.tilt = 0;
@@ -529,7 +944,7 @@ function attach(n, silent) {
   const sp = hypot(p.vx, p.vy) || 1;
   p.vx += p.vx / sp * 96 * U; p.vy += p.vy / sp * 96 * U;
   wave(n.x, n.y, 16 * U, 130 * U, G.hue + 26, 0.55);
-  if (!silent) { A.pluck(G.combo); TG.haptic('light'); }
+  if (!silent) { A.pluck(G.combo); hap('light'); }
 }
 function release(judge) {
   const n = G.attached, p = G.p;
@@ -544,11 +959,12 @@ function release(judge) {
     text(p.x, p.y - 34 * U, 'ИДЕАЛЬНО +' + bonus, G.hue + 40);
     wave(p.x, p.y, 10 * U, 260 * U, G.hue + 60, 0.9);
     G.flash = Math.min(1, G.flash + 0.22); G.hitStop = 0.045; A.perfect();
-    TG.haptic('medium');                      // «идеально» должно ощущаться пальцами
+    hap('medium');                            // «идеально» должно ощущаться пальцами
   }
 }
 function holdPress() {
   TG.gesture();                               // фуллскрин в WebView пускают только по жесту
+  if (OPT.music) MU.start();                  // музыка заводится с первого касания
   if (G.state === 'title') { A.boot(); reset(false); TG.sync('play'); return; }
   if (G.state === 'dead') { if (G.deadT > 0.55) { A.boot(); reset(false); TG.sync('play'); } return; }
   if (G.state === 'pause') { setPause(false); return; }
@@ -690,7 +1106,7 @@ function update(dt) {
         text(g.x, g.y - g.r - 12 * U, '+Sияние +260', G.hue + 70);
         G.flash = Math.min(1, G.flash + 0.30); G.hitStop = 0.05;
         G.shake = Math.max(G.shake, 5 * U);
-        A.gate(); TG.haptic('medium');
+        A.gate(); hap('medium');
       }
       spark(g.x, g.y, 34, G.hue + 60, 460 * U, 1.1);
       wave(g.x, g.y, g.r * 0.5, g.r * 3.2, G.hue + 66, 0.9);
@@ -774,9 +1190,12 @@ function die() {
   G.shake = 16 * U; G.flash = 0.9;
   spark(p.x, p.y, 90, G.hue - 20, 620 * U, 1.6);
   wave(p.x, p.y, 10 * U, 520 * U, G.hue, 1);
-  A.die(); A.danger(0); TG.haptic('lose');
+  A.die(); A.danger(0); hap('lose');
   const sc = Math.floor(G.score);
-  if (sc > G.best) { G.best = sc; try { localStorage.setItem('radiance.best', String(sc)); } catch (e) { } }
+  if (sc > G.best) { G.best = sc; LS.set('radiance.best', String(sc)); }
+  if (!G.demo && sc > 0)                        // в закладку идут только настоящие полёты
+    REC.push({ s: sc, m: Math.floor(G.dist / (11 * U)), c: G.maxCombo | 0, g: G.got | 0,
+               gt: G.gatesHit | 0, p: G.perfects | 0, t: Date.now() });
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -916,6 +1335,17 @@ function drawGates(t) {
 }
 
 function drawNodes(t) {
+  // направляющие ярусов: лесенка должна читаться одним взглядом
+  ctx.save();
+  ctx.lineWidth = 1.1; ctx.setLineDash([7 * U, 13 * U]);
+  ctx.lineDashOffset = (G.cam * 0.6) % (20 * U);
+  const loRow = topRow();
+  for (let i = loRow; i < ROWF.length; i++) {
+    const y = H * ROWF[i];
+    ctx.strokeStyle = hsl(G.hue + 14, 70, 78, i === loRow ? 0.115 : 0.06);
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  ctx.restore();
   const near = findAnchor();
   ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
   for (const n of G.nodes) {
@@ -1278,8 +1708,8 @@ function pauseScreen() {
   ctx.fillText('П А У З А', W / 2, H / 2 - 14);
   ctx.fillStyle = 'rgba(190,220,240,0.5)';
   ctx.font = `400 ${Math.round(clamp(W * 0.016, 12, 18))}px 'Segoe UI',sans-serif`;
-  ctx.fillText(TOUCH ? (TG.inTG ? 'КОСНИСЬ ЭКРАНА ИЛИ «НАЗАД» — продолжить' : 'КОСНИСЬ ЭКРАНА — продолжить')
-                     : 'P — продолжить        M — звук ' + (A.muted ? 'выкл' : 'вкл'), W / 2, H / 2 + 34);
+  ctx.fillText(TOUCH ? (TG.inTG ? 'КОСНИСЬ ЭКРАНА ИЛИ «НАЗАД» — продолжить · МЕНЮ ВНИЗУ' : 'КОСНИСЬ ЭКРАНА — продолжить · МЕНЮ ВНИЗУ')
+                     : 'P — продолжить      ESC — меню      M — звук ' + (A.muted ? 'выкл' : 'вкл'), W / 2, H / 2 + 34);
   ctx.restore();
 }
 
@@ -1302,7 +1732,7 @@ function post(t) {
 
 function render(t) {
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  const sh = G.shake;
+  const sh = OPT.shake ? G.shake : 0;         // тряску можно выключить в меню
   if (sh > 0.4) ctx.translate(rand(-sh, sh), rand(-sh, sh));
 
   bg(t);
@@ -1371,6 +1801,7 @@ function frame(now) {
   // Портрет телефона: под экраном «поверни» мир должен стоять, а не умирать
   if (PORTRAIT.matches && G.state === 'play') setPause(true);
   if ((syncT -= dt) <= 0) { syncT = 0.3; TG.sync(G.state); }
+  MU.duck(dt);                              // музыка сама уступает место Тьме
   autoScale(dt);
   if (G.state === 'pause') { /* мир стоит */ }
   else if (G.state === 'dead') { G.deadT += dt; updateDead(dt); }
@@ -1404,6 +1835,8 @@ function updateDead(dt) {
 /* ── ввод ─────────────────────────────────────────────────────────── */
 window.addEventListener('pointerdown', e => {
   if (e.button !== undefined && e.button !== 0) return;
+  const t = e.target;
+  if (MENU.open || (t && t.closest && t.closest('#bar,#menu,#bye'))) return;
   holdPress();
 }, { passive: true });
 window.addEventListener('pointerup', () => holdRelease());
@@ -1411,16 +1844,22 @@ window.addEventListener('pointercancel', () => holdRelease());
 window.addEventListener('keydown', e => {
   const k = (e.key || '').toLowerCase();
   const code = e.code || '';
-  if (e.code === 'Space' || k === 'arrowup' || k === 'w') {
+  if (MENU.open) {
+    if (k === 'escape' || code === 'Escape') MENU.hide();
+    return;                                   // клавиатура целиком принадлежит меню
+  }
+  if (code === 'Space' || k === 'arrowup' || k === 'w') {
     e.preventDefault();
     if (!e.repeat) holdPress();
-  } else if (k === 'p' || k === 'escape' || code === 'Escape') {
+  } else if (k === 'escape' || code === 'Escape') {
+    MENU.show();                              // ESC — меню, как во всех нормальных играх
+  } else if (k === 'p') {
     setPause(G.state === 'play');
-    if (G.state === 'pause' && TG.inTG) TG.haptic('light');
+    if (G.state === 'pause' && TG.inTG) hap('light');
   } else if (k === 'm') {
-    A.boot(); A.setMuted(!A.muted);
+    A.boot(); A.setMuted(!A.muted); OPT.sfx = !A.muted; OPT.save(); MENU.paint();
   } else if (k === 'r') {
-    if (G.state === 'play' || G.state === 'dead' || G.state === 'pause') { A.boot(); reset(false); }
+    if (G.state === 'play' || G.state === 'dead' || G.state === 'pause') { A.boot(); MU.start(); reset(false); }
   }
 });
 window.addEventListener('keyup', e => {
@@ -1429,7 +1868,8 @@ window.addEventListener('keyup', e => {
 });
 document.addEventListener('contextmenu', e => e.preventDefault());
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) setPause(true);
+  if (document.hidden) { setPause(true); if (MU.el) MU.el.pause(); }
+  else if (MU.want) MU.play();                // вернулись — музыка продолжает сама
 });
 window.addEventListener('blur', () => {
   G.hold = false; if (G.state === 'play') setPause(true);
@@ -1437,9 +1877,10 @@ window.addEventListener('blur', () => {
 
 /* ── Telegram: аппаратная «Назад» = пауза, кнопка клиента = поделиться ── */
 TG.onBack(() => {
+  if (MENU.open) { MENU.hide(); return; }      // «Назад» сначала закрывает меню
   if (G.state === 'play') setPause(true);
   else if (G.state === 'pause') setPause(false);
-  else if (G.state === 'dead' && G.deadT > 0.55) { A.boot(); reset(false); }
+  else if (G.state === 'dead' && G.deadT > 0.55) { A.boot(); MU.start(); reset(false); }
 });
 TG.onShare(() => TG.share(Math.floor(G.score), Math.floor(G.dist / (11 * U))));
 TG.onViewport(() => resize());
@@ -1448,6 +1889,10 @@ if (PORTRAIT.addEventListener) PORTRAIT.addEventListener('change', onPortrait);
 else if (PORTRAIT.addListener) PORTRAIT.addListener(onPortrait);
 
 /* ── старт ────────────────────────────────────────────────────────── */
+MU.init(); MENU.paint();
+// на телефоне подсказка про мышку бессмысленна — пишем то, что работает пальцем
+if (TOUCH || TG.mobile) document.getElementById('hint').innerHTML =
+  '<b>КОСНИСЬ ЭКРАНА</b> — нить света &nbsp;·&nbsp; ☰ — меню';
 resize(); buildField(); reset(true);
 requestAnimationFrame(t => { last = t; frame(t); });
 </script>
