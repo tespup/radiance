@@ -424,7 +424,7 @@ if (TOUCH) {
 }
 let W = 0, H = 0, DPR = 1, DPRU = 1, SCALE = 1;
 const WS_MAX = 1.5;   // потолок внутреннего разрешения мира (выше — глаз не различит)
-let U = 1, GRAV = 0, WIND = 0, MAXV = 0, RANGE = 0, seaY = 0, ceilY = 0;
+let U = 1, GRAV = 0, WIND = 0, MAXV = 0, RANGE = 0, seaY = 0, ceilY = 0, FLOORH = 0;
 
 function resize() {
   DPRU = clamp(window.devicePixelRatio || 1, 1, 2);
@@ -438,6 +438,9 @@ function resize() {
   U = clamp(Math.min(H / 720, W / 820), 0.6, 1.6);
   GRAV = 1460 * U; WIND = 356 * U; MAXV = 1760 * U; RANGE = 402 * U;
   seaY = H * 0.855; ceilY = H * 0.055;
+  // шаг этажа = расстояние от первого ряда зацепок до земли;
+  // но всегда в пределах досягаемости нити, иначе вверх не залезть
+  FLOORH = Math.min(seaY - H * 0.45, RANGE * 0.76);
   readSafe();
   buildPost();
 }
@@ -571,7 +574,14 @@ const LS = {
   set(k, v) { try { localStorage.setItem(k, v); } catch (e) { } }
 };
 const OPT = {
-  music: LS.get('radiance.music', '0') === '1',
+  // Музыка по умолчанию ВКЛЮЧЕНА: треки лежат рядом в music/, игра заводится
+  // с первого касания экрана. Выключил в меню — выбор запоминается навсегда.
+  // Одноразовая миграция: старые сохранения (где выключено было по умолчанию) включаются раз.
+  music: (() => {
+    if (LS.get('radiance.musdef', '') === '2') return LS.get('radiance.music', '1') === '1';
+    LS.set('radiance.musdef', '2'); LS.set('radiance.music', '1');
+    return true;
+  })(),
   sfx:   LS.get('radiance.sfx',   '1') === '1',
   shake: LS.get('radiance.shake', '1') === '1',
   hap:   LS.get('radiance.hap',   '1') === '1',
@@ -769,7 +779,7 @@ const G = {
   attached: null, hold: false, holdGap: 0,
   umbra: 0, umbraV: 0, dist: 0, score: 0, combo: 0, comboT: 0, maxCombo: 0,
   got: 0, gatesHit: 0, perfects: 0, beaten: false,
-  best: 0, genX: 0, lastY: 0, nodeN: 0, lv: 3, lvGoal: 3, lvRest: 0, topOpen: false,
+  best: 0, genX: 0, lastY: 0, lastNode: null, nodeN: 0, camY: 0, topOpen: false,
   shake: 0, hitStop: 0, flash: 0, dark: 0, hue: 192, hueSky: 192,
   deadT: 0, tip: 0, demo: true, aiT: 0,
 };
@@ -813,59 +823,34 @@ function buildPost() {
 }
 
 /* ── генерация тропы ─────────────────────────────────────────────── */
-/* ЯРУСЫ ЗАЦЕПОК. ROWF[0] — самый верхний ярус, последний — самый нижний.
-   Вся лесенка стоит ровно в той же полосе, где раньше гулял один ряд,
-   поэтому физика, дальность нити и Тьма остались как были.
-   Верхний ярус открывается по дистанции, а самый-самый верхний — ещё и
-   с шансом: потому «всего 4 уровня вверх, иногда 5». */
-const ROWF = [0.115, 0.225, 0.34, 0.455, 0.565, 0.665];
-const ROW_BOT = ROWF.length - 1;              // самый нижний ярус; старт — индекс 3
-function topRow() {
+/* ЭТАЖИ ЗАЦЕПОК. Тропа первого этажа — ровно та, что была всегда:
+   тот же разброс по высоте, те же дистанции, та же физика.
+   Выше неё, над экраном, висят те же огоньки, поднятые на FLOORH —
+   а FLOORH это и есть расстояние от первого ряда зацепок до земли.
+   Получаются этажи: захотел вверх — цепляешься за свой огонёж этажом
+   выше, и камера едет за тобой. Сколько этажей открыто — см. floorsOpen(). */
+function floorsOpen() {
   const d = G.dist / U;
-  if (d < 900) return 3;                      // старт: три яруса, как раньше
-  if (d < 2600) return 2;
-  if (d < 5200) return 1;                     // четыре уровня вверх — обычная высота
-  return G.topOpen ? 0 : 1;                   // а пятый — как подарок не каждому
-}
-function newGoal() {
-  const lo = topRow();
-  if (ROW_BOT - lo < 1) { G.lvGoal = G.lv; G.lvRest = 3; return; }
-  const r = Math.random();
-  // вверх охотнее: лесенка должна звать наверх, а не гулять по полу
-  if (r < 0.62) G.lvGoal = lo;                                            // рывок к потолку
-  else if (r < 0.86) G.lvGoal = Math.max(lo, G.lv - 2 - ((Math.random() * 2) | 0));
-  else G.lvGoal = ROW_BOT;                                                // вниз, перевести дух
-  if (G.lvGoal === G.lv) G.lvGoal = G.lv === lo ? ROW_BOT : lo;
-}
-function nextRow() {
-  if (G.nodeN < 7) return G.lv;
-  const lo = topRow();
-  if (G.lvGoal < lo) G.lvGoal = lo;               // потолок мог открыться позже
-  if (G.lv === G.lvGoal) {
-    if (G.lvRest > 0) { G.lvRest--; return G.lv; }// на ярусе стоит немного, потом снова вверх
-    newGoal();
-    return G.lv;
-  }
-  const nl = G.lv + (G.lvGoal > G.lv ? 1 : -1);
-  if (nl === G.lvGoal) G.lvRest = 2 + ((Math.random() * 4) | 0);
-  return nl;
+  if (d < 1000) return 0;                     // первые метры — только привычная тропа
+  let k = d < 2600 ? 1 : d < 4600 ? 2 : 3;    // вверх: 2-й, 3-й, 4-й этажи
+  if (k === 3 && G.topOpen) k = 4;            // пятый — не каждому полёту
+  return k;
 }
 function addNode() {
   const ramp = clamp(G.dist / (11000 * U), 0, 1);
   // мягкая прокачка самому старту: первые огоньки близко и по одной высоте
   const ease = clamp((G.nodeN - 1) / 5, 0, 1);
-  const lv = nextRow(), step = lv - G.lv;
-  G.lv = lv;
-  const gap = rand(300, 425) * U * lerp(0.8, 1, ease) * (1 + ramp * 0.42) * (step ? 0.88 : 1);
+  const gap = rand(300, 425) * U * lerp(0.8, 1, ease) * (1 + ramp * 0.42);
   const x = G.genX + gap;
-  const y = clamp(H * ROWF[lv] + rand(-11, 11) * U, H * 0.11, seaY - 96 * U);
-  const prev = G.nodes[G.nodes.length - 1];
+  const y = clamp(G.lastY + rand(-1, 1) * rand(45, 165) * U * lerp(0.42, 1, ease),
+                  H * 0.15, seaY - 96 * U);
+  const prev = G.lastNode;            // прошлый огонёк ТРОПЫ (огни этажей выше — не в счёт)
   const n = {
-    x, y, lv, r: 12 * U, len: 0, taut: false, slackT: 0, grabT: 0,
+    x, y, r: 12 * U, len: 0, taut: false, slackT: 0, grabT: 0,
     seed: Math.random() * 1000, pet: 5 + ((Math.random() * 3) | 0), spin: rand(-0.5, 0.5),
     flash: 0, born: G.clock
   };
-  G.nodes.push(n); G.genX = x; G.lastY = y; G.nodeN++;
+  G.nodes.push(n); G.genX = x; G.lastY = y; G.lastNode = n; G.nodeN++;
 
   // россыпь искр по дуге между огоньками — там, где проходит естественный мах
   if (prev) {
@@ -889,6 +874,17 @@ function addNode() {
       r: 88 * U, hit: false, ph: rand(0, TAU), pop: 0
     });
   }
+  // ── этаж выше: те же огоньки, поднятые на FLOORH (ряд зацепок → земля).
+  //    Тропа внизу от этого не меняется вообще: просто над ней тоже есть за что взяться.
+  for (let k = 1, fk = floorsOpen(); k <= fk; k++) {
+    if (Math.random() > 0.9 - k * 0.07) continue;       // чем выше этаж, тем он разреженнее
+    G.nodes.push({
+      x: x + rand(-60, 60) * U, y: y - k * FLOORH + rand(-13, 13) * U,
+      up: k, r: 12 * U, len: 0, taut: false, slackT: 0, grabT: 0,
+      seed: Math.random() * 1000, pet: 5 + ((Math.random() * 3) | 0), spin: rand(-0.5, 0.5),
+      flash: 0, born: G.clock
+    });
+  }
 }
 function genAhead() {
   let guard = 0;
@@ -901,10 +897,9 @@ function genAhead() {
 
 function reset(demo) {
   G.demo = demo;
-  G.cam = 0; G.genX = 0; G.nodeN = 0;
-  G.lv = 3; G.lvGoal = 3; G.lvRest = 6;         // старт — средний ярус
-  G.topOpen = Math.random() < 0.5;              // «иногда 5 уровней» решается один раз на полёт
-  G.lastY = H * ROWF[G.lv];
+  G.cam = 0; G.camY = 0; G.genX = 0; G.nodeN = 0; G.lastNode = null;
+  G.topOpen = Math.random() < 0.5;      // пятый этаж открывается не в каждом полёте
+  G.lastY = H * 0.34;                   // тропа стартует ровно от уровня игрока
   G.nodes = []; G.sparks = []; G.gates = []; G.parts = []; G.waves = []; G.texts = []; G.trail = [];
   const p = G.p;
   p.x = W * 0.36; p.y = H * 0.34; p.vx = 560 * U; p.vy = 40 * U; p.tilt = 0;
@@ -923,14 +918,19 @@ function reset(demo) {
 /* ── нить света ───────────────────────────────────────────────────── */
 function findAnchor() {
   const p = G.p; let best = null, bs = 1e9;
+  // «вверх» = игрок прямо сейчас активно взлетел (отпустил нить на подъёме).
+  // Только в этот момент нить целится в огонёж этажом выше; летишь по тропе —
+  // берётся обычный ближайший огонёк, то есть первый этаж не меняется никогда.
+  const climbing = p.vy < -320 * U;
   for (const n of G.nodes) {
     if (n === G.attached) continue;
     const dx = n.x - p.x, dy = n.y - p.y, d = hypot(dx, dy);
     if (d > RANGE) continue;
     if (d < 96 * U) continue;          // слишком близко — будет «карусель» вместо дуги
     if (dx < -70 * U) continue;
-    const s = d + (dx < 0 ? -dx * 1.7 : 0) - dx * 0.22 + Math.abs(dy) * 0.30
-            + Math.abs(d - 196 * U) * 0.20;
+    let s = d + (dx < 0 ? -dx * 1.7 : 0) - dx * 0.22 + Math.abs(dy) * 0.30
+          + Math.abs(d - 196 * U) * 0.20;
+    if (n.up) s += climbing ? -FLOORH * 0.55 : FLOORH * 0.45;
     if (s < bs) { bs = s; best = n; }
   }
   return best;
@@ -1057,6 +1057,11 @@ function update(dt) {
     if (G.holdGap > 0.12) { const n = findAnchor(); if (n) { attach(n); G.holdGap = 0; } }
   }
 
+  // ── вертикаль: экран едет вверх за игроком, пол по-прежнему море.
+  //    Выше последнего открытого этажа камера встаёт — и там получается потолок.
+  const camTop = floorsOpen() * FLOORH;
+  G.camY = lerp(G.camY, clamp(H * 0.46 - p.y, 0, camTop), 1 - Math.exp(-7 * dt));
+
   // ── море и небо
   if (p.y > seaY - p.r && p.vy > 0) {
     // плоский «блин»: от воды реально отпрыгиваешь вверх, а не вязнешь в ней
@@ -1065,7 +1070,10 @@ function update(dt) {
     spark(p.x, seaY, 16, G.hue + 8, 340 * U, 0.85);
     wave(p.x, seaY, 8 * U, 210 * U, G.hue + 10, 0.5);
   }
-  if (p.y < ceilY + p.r && p.vy < 0) { p.y = ceilY + p.r; p.vy = -p.vy * 0.35; spark(p.x, p.y, 6, G.hue, 180 * U, 0.4); }
+  // «небо» считается по экрану: пока камера едет, потолка нет;
+  // упёрлась в верхний этаж — всё, дальше не пустят
+  const sy = p.y + G.camY;
+  if (sy < ceilY + p.r && p.vy < 0) { p.y = ceilY + p.r - G.camY; p.vy = -p.vy * 0.35; spark(p.x, p.y, 6, G.hue, 180 * U, 0.4); }
   p.tilt = lerp(p.tilt, clamp(p.vy / (900 * U), -1, 1), 1 - Math.exp(-9 * dt));
 
   // ── огоньки: мягкое отталкивание, вспышки
@@ -1203,6 +1211,8 @@ function die() {
    ══════════════════════════════════════════════════════════════════ */
 function bg(t) {
   const h = G.hueSky;
+  const vy = G.camY;                    // параллакс по вертикали: чем ближе слой,
+                                        // тем сильнее он уезжает вниз, когда мы взлетаем
   const g = ctx.createLinearGradient(0, 0, 0, H);
   g.addColorStop(0.00, hsl(h + 16, 58, 6));
   g.addColorStop(0.42, hsl(h + 4, 52, 9));
@@ -1214,7 +1224,7 @@ function bg(t) {
   ctx.save();
   for (const s of stars) {
     const x = (((s.x - G.cam * s.z / W) % 1) + 1) % 1 * W;
-    const y = s.y * H * 0.9;
+    const y = s.y * H * 0.9 + vy * (0.05 + s.z * 0.3);
     const tw = 0.55 + 0.45 * Math.sin(t * s.tw + s.ph);
     ctx.fillStyle = hsl(h + 30, 60, 92, 0.65 * tw * (0.3 + s.z * 2));
     ctx.beginPath(); ctx.arc(x, y, s.r, 0, TAU); ctx.fill();
@@ -1226,7 +1236,7 @@ function bg(t) {
   ctx.globalCompositeOperation = 'lighter';
   for (let b = 0; b < 4; b++) {
     const bh = h + 18 + b * 26;
-    const base = H * (0.16 + b * 0.10), amp = H * (0.05 + b * 0.03);
+    const base = H * (0.16 + b * 0.10) + vy * (0.16 + b * 0.06), amp = H * (0.05 + b * 0.03);
     const par = 0.05 + b * 0.035;
     const grd = ctx.createLinearGradient(0, base - H * 0.22, 0, base + H * 0.30);
     grd.addColorStop(0, hsl(bh, 92, 62, 0));
@@ -1253,7 +1263,7 @@ function bg(t) {
   ctx.save(); ctx.globalCompositeOperation = 'lighter';
   for (const m of motes) {
     const x = (((m.x - G.cam * m.z / W) % 1.2) + 1.2) % 1.2 / 1.2 * W * 1.2 - W * 0.1;
-    const y = m.y * H + Math.sin(t * m.sp + m.ph) * 14 * U;
+    const y = m.y * H + Math.sin(t * m.sp + m.ph) * 14 * U + vy * (0.34 + m.z * 0.9);
     const a = 0.20 + 0.20 * Math.sin(t * 1.3 + m.ph);
     const gr = ctx.createRadialGradient(x, y, 0, x, y, m.r * 6);
     gr.addColorStop(0, hsl(h + 24, 90, 78, a)); gr.addColorStop(1, hsl(h + 24, 90, 60, 0));
@@ -1335,26 +1345,27 @@ function drawGates(t) {
 }
 
 function drawNodes(t) {
-  // направляющие ярусов: лесенка должна читаться одним взглядом
-  ctx.save();
-  ctx.lineWidth = 1.1; ctx.setLineDash([7 * U, 13 * U]);
-  ctx.lineDashOffset = (G.cam * 0.6) % (20 * U);
-  const loRow = topRow();
-  for (let i = loRow; i < ROWF.length; i++) {
-    const y = H * ROWF[i];
-    ctx.strokeStyle = hsl(G.hue + 14, 70, 78, i === loRow ? 0.115 : 0.06);
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
-  }
-  ctx.restore();
   const near = findAnchor();
   ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
   for (const n of G.nodes) {
     const x = n.x - G.cam; if (x < -200 * U || x > W + 200 * U) continue;
+    const sy = n.y + G.camY;                       // экранная высота: за кадром не рисуем
+    if (sy < -280 * U || sy > H + 280 * U) continue;
     const h = G.hue + 24;
     const active = n === G.attached, target = n === near;
     const pulse = 0.8 + 0.2 * Math.sin(t * 2.1 + n.seed);
     const glow = (active ? 3.4 : target ? 2.5 : 1.7) * (1 + n.flash * 0.8);
     const R = n.r * glow * 2.6;
+
+    // огонёж этажа выше: тонкая «паутинка» вниз — сразу видно, что он не случайный
+    if (n.up) {
+      ctx.save();
+      ctx.strokeStyle = hsl(h - 10, 70, 78, n === near ? 0.13 : 0.06);
+      ctx.lineWidth = 1; ctx.setLineDash([5 * U, 12 * U]);
+      ctx.lineDashOffset = (t * 16 * U) % (17 * U);
+      ctx.beginPath(); ctx.moveTo(x, n.y + n.r * 2.4); ctx.lineTo(x, n.y + FLOORH * 0.8); ctx.stroke();
+      ctx.restore();
+    }
     const gr = ctx.createRadialGradient(x, n.y, 0, x, n.y, R);
     gr.addColorStop(0, hsl(h, 96, 78, 0.55 * pulse));
     gr.addColorStop(0.30, hsl(h + 12, 96, 62, 0.20 * pulse));
@@ -1513,7 +1524,8 @@ function drawTexts() {
 function drawUmbra(t) {
   const x0 = G.umbra - G.cam;
   if (x0 < -30) return;
-  const h = G.hue;
+  const ty = -G.camY;                     // Тьма — стена на всю высоту экрана,
+  const h = G.hue;                        // а экран сейчас сдвинут камерой вверх
   const edge = 260 * U;
   ctx.save();
   const g = ctx.createLinearGradient(x0 - edge, 0, x0 + 30 * U, 0);
@@ -1521,12 +1533,12 @@ function drawUmbra(t) {
   g.addColorStop(0.62, 'rgba(3,4,12,0.94)');
   g.addColorStop(1, 'rgba(4,6,16,0)');
   ctx.fillStyle = g;
-  ctx.fillRect(-40, -40, Math.max(0, x0 + 30 * U) + 40, H + 80);
+  ctx.fillRect(-40, ty - 40, Math.max(0, x0 + 30 * U) + 40, H + 80);
 
   // щупальца Тьмы на границе
   ctx.globalCompositeOperation = 'lighter';
   for (let i = 0; i < 7; i++) {
-    const y = H * (0.08 + i * 0.13);
+    const y = ty + H * (0.08 + i * 0.13);
     const amp = 30 * U * (0.5 + Math.abs(Math.sin(t * 0.6 + i)));
     ctx.strokeStyle = hsl(h + 200, 70, 55, 0.16 + 0.1 * Math.sin(t * 1.4 + i));
     ctx.lineWidth = (1 + i % 3) * U;
@@ -1542,7 +1554,7 @@ function drawUmbra(t) {
   const eg = ctx.createLinearGradient(x0 - 60 * U, 0, x0 + 26 * U, 0);
   eg.addColorStop(0, hsl(h + 190, 90, 60, 0));
   eg.addColorStop(1, hsl(h + 196, 96, 66, 0.30 + 0.16 * Math.sin(t * 2.2)));
-  ctx.fillStyle = eg; ctx.fillRect(x0 - 60 * U, 0, 86 * U, H);
+  ctx.fillStyle = eg; ctx.fillRect(x0 - 60 * U, ty, 86 * U, H);
   ctx.restore();
 }
 
@@ -1736,6 +1748,10 @@ function render(t) {
   if (sh > 0.4) ctx.translate(rand(-sh, sh), rand(-sh, sh));
 
   bg(t);
+  // ── мировая вертикаль: всё, что в мире, едет вместе с камерой вверх.
+  //    Небо (bg) и пост-обработка остаются привязаны к экрану.
+  ctx.save();
+  ctx.translate(0, G.camY);
   sea(t);
   drawGates(t);
   drawSparks(t);
@@ -1746,6 +1762,7 @@ function render(t) {
   if (G.state !== 'dead' || G.deadT < 1.6) drawPlayer(t);
   drawTexts();
   drawUmbra(t);
+  ctx.restore();
   post(t);
 
   // ── Экраны/HUD — отдельный холст в родном разрешении устройства:
