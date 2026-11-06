@@ -161,6 +161,12 @@
   .rec.me { background: hsla(196,90%,60%,.09); border-radius: 8px; }
   .rec.me .sc { color: hsl(196,95%,80%); }
   .empty { padding: 26px 4px; text-align: center; font-size: 12px; letter-spacing: .12em; color: rgba(180,215,235,.35); }
+  .gif { display: flex; align-items: baseline; gap: 10px; padding: 9px 2px; border-bottom: 1px solid rgba(140,215,255,.08); }
+  .gif .k { flex: none; width: 58px; font-size: 10px; letter-spacing: .06em; color: rgba(180,215,235,.4); }
+  .gif .v { flex: 1; min-width: 0; }
+  .gif .n { display: block; font-size: 13px; font-weight: 300; color: rgba(190,220,240,.34); letter-spacing: .04em; }
+  .gif .d { display: block; margin-top: 2px; font-size: 10.5px; line-height: 1.45; letter-spacing: .04em; color: rgba(180,215,235,.4); }
+  .gif.on .n { color: hsl(46,92%,78%); }
   #bye {
     position: fixed; inset: 0; z-index: 53; display: none;
     flex-direction: column; align-items: center; justify-content: center; gap: 3vh; text-align: center;
@@ -340,6 +346,7 @@ const TG = (function () {
     <div class="tabs" role="tablist">
       <button class="on" data-tab="opts">Настройки</button>
       <button data-tab="rec">Рекорды</button>
+      <button data-tab="gift">Дары</button>
       <button data-tab="how">Как летать</button>
     </div>
     <div class="body">
@@ -361,12 +368,19 @@ const TG = (function () {
         <div id="rec-list"></div>
         <div class="btns"><button class="b" id="b-clear">Очистить рекорды</button></div>
       </div>
+      <div data-pane="gift" hidden>
+        <div class="row"><div class="t">Дары полёта<span class="s" id="g-sum">ещё ни одного</span></div></div>
+        <div id="gift-list"></div>
+        <div class="btns"><button class="b" id="b-gclear">Забыть открытое</button></div>
+      </div>
       <div data-pane="how" hidden>
         <div class="row"><div class="t">Держи<span class="s">ЛКМ, ПРОБЕЛ или палец — нить сама тянется к ближайшему огоньку</span></div></div>
         <div class="row"><div class="t">Отпусти<span class="s">на верхней точке дуги — летишь дальше и быстрее. Это «Идеально»</span></div></div>
         <div class="row"><div class="t">Ряды зацепок<span class="s">трамвай идёт ярусами: вверху разгон больше, но и падать дольше</span></div></div>
         <div class="row"><div class="t">Врата и искры<span class="s">искры держат комбо, врата ×2 и +260</span></div></div>
         <div class="row"><div class="t">Тьма<span class="s">единственная смерть. Высоту она не уважает и не устаёт</span></div></div>
+        <div class="row"><div class="t">Дары полёта<span class="s">за дистанцию включается новое: подружки, луна, киты, слабее гравитация. Список — во вкладке «Дары»</span></div></div>
+        <div class="row"><div class="t">Призы верха<span class="s">на последнем ярусе горят Полярная звезда (+900 и венец ×1.5) и Лампада (гонит Тьму назад)</span></div></div>
         <div class="row"><div class="t">Клавиши<span class="s">P — пауза · ESC — меню · M — звук · R — заново</span></div></div>
       </div>
     </div>
@@ -555,6 +569,16 @@ const A = {
       setTimeout(() => this.note(392 * Math.pow(2, n / 12), 0.34, 0.05, 'triangle'), i * 26));
   },
   splash() { this.noise(0.42, 900, 120, 0.09, 0.6); this.note(120, 0.28, 0.05, 'sine', 0, 60); },
+  reveal() {                                    // новый дар полёта: восходящий колокольчик
+    [0, 4, 7, 12, 16].forEach((n, i) =>
+      setTimeout(() => this.note(523 * Math.pow(2, n / 12), 0.55, 0.05, 'sine'), i * 58));
+    this.noise(0.7, 2400, 320, 0.028, 0.8);
+  },
+  prize() {                                     // приз самого верха: дорого и звонко
+    [0, 9, 16, 24].forEach((n, i) =>
+      setTimeout(() => this.note(659 * Math.pow(2, n / 12), 0.46, 0.06, 'triangle'), i * 36));
+    this.noise(0.4, 3200, 700, 0.02, 0.9);
+  },
   ui(hi) {                                    // клик по интерфейсу: коротко и по-доброму
     this.note(hi ? 660 : 494, 0.13, 0.03, 'sine');
     this.note(hi ? 988 : 740, 0.1, 0.018, 'sine', 0.035);
@@ -673,6 +697,78 @@ const REC = {
 };
 REC.load();
 
+/* ══════════════════════════════════════════════════════════════════
+    ДАРЫ ПОЛЁТА — дальше летишь, больше открывается
+    Каждый дар включается один раз за полёт на своей дистанции и сразу
+    что-то меняет: физику, небо, награды на верхних этажах. Метры — те
+    же самые, что показывает счётчик слева вверху.
+    ══════════════════════════════════════════════════════════════════ */
+const GIFTS = [
+  { m: 350,   n: 'Искрин',          e: { comps: 1 },            d: 'первая искра-подружка: летит рядом и сама собирает искры' },
+  { m: 600,   n: 'Звездопад',       e: { met: true },           d: 'небо начинает падать — изредка пролетают метеоры' },
+  { m: 900,   n: 'Полнолуние',      e: { moon: true },          d: 'над морём встаёт луна: чем выше летишь, тем она крупнее' },
+  { m: 1250,  n: 'Искрин ×2',       e: { comps: 2 },            d: 'вторая искра-подружка' },
+  { m: 1600,  n: 'Маятник',         e: { range: 1.08 },         d: 'нить достаёт дальше на 8%' },
+  { m: 2000,  n: 'Эхо',             e: { echo: 1.35 },          d: 'искры дают на 35% больше очков' },
+  { m: 2450,  n: 'Небесные киты',   e: { whale: true },         d: 'по небу проплывают киты — просто так, для размаха' },
+  { m: 2950,  n: 'Перо',            e: { grav: 0.94 },          d: 'гравитация мягче на 6%: дуга выше и длиннее' },
+  { m: 3500,  n: 'Полярная звезда', e: { polar: true },         d: 'на самом верху загорают золотые звёзды: +900 и венец' },
+  { m: 4100,  n: 'Искрин ×3',       e: { comps: 3 },            d: 'третья искра-подружка' },
+  { m: 4700,  n: 'Лампада',         e: { lamp: true },          d: 'наверху горят лампады: собранная лампада гонит Тьму назад' },
+  { m: 5500,  n: 'Маят',            e: { boost: 1.09 },         d: 'идеальный отпуск на дуге разгоняет на 9% сильнее' },
+  { m: 6500,  n: 'Золотой след',    e: { gold: true },          d: 'след золотится, а венец держится вдвое дольше' },
+  { m: 8200,  n: 'Созвездие',       e: { comps: 4, umbraK: 0.96 }, d: 'четыре искры-подружки · Тьма идёт на 4% медленнее' },
+  { m: 11000, n: 'Полярный венец',  e: { crown: true },         d: 'венец больше не гаснет — до самого конца полёта' },
+];
+const B0 = { comps: 0, met: false, moon: false, range: 1, echo: 1, whale: false, grav: 1,
+             polar: false, lamp: false, boost: 1, gold: false, umbraK: 1, crown: false };
+const B = Object.assign({}, B0);          // текущие бонусы полёта: читают физика и рендер
+function applyGifts(n) {
+  for (const k in B0) B[k] = B0[k];
+  for (let i = 0; i < n && i < GIFTS.length; i++) Object.assign(B, GIFTS[i].e);
+}
+// «коллекция»: что игрок уже видел когда-либо, живёт между полётами
+const LIFE = {
+  gift: 0, floor: 0,
+  load() {
+    this.gift = parseInt(LS.get('radiance.giftmax', '0'), 10) || 0;
+    this.floor = parseInt(LS.get('radiance.floormax', '0'), 10) || 0;
+  },
+  saw(n, f) {
+    let dirty = false;
+    if (n > this.gift) { this.gift = n; LS.set('radiance.giftmax', String(n)); dirty = true; }
+    if (f > this.floor) { this.floor = f; LS.set('radiance.floormax', String(f)); dirty = true; }
+    return dirty;
+  },
+  wipe() { this.gift = 0; this.floor = 0; LS.set('radiance.giftmax', '0'); LS.set('radiance.floormax', '0'); }
+};
+LIFE.load();
+
+/* мягкий свет одним blit-ом: дешевле, чем createRadialGradient на каждый
+   новый объект неба, — и не зависит от размера окна */
+const GLOW = (() => {
+  const n = 128, c = document.createElement('canvas');
+  c.width = c.height = n;
+  const g = c.getContext('2d'), r = n / 2;
+  const gr = g.createRadialGradient(r, r, 0, r, r, r);
+  gr.addColorStop(0.00, 'rgba(255,252,240,1)');
+  gr.addColorStop(0.16, 'rgba(255,246,226,0.52)');
+  gr.addColorStop(0.44, 'rgba(255,238,204,0.14)');
+  gr.addColorStop(1.00, 'rgba(255,232,190,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, n, n);
+  return c;
+})();
+function drawGlow(x, y, r, a, sq) {
+  if (a <= 0.004 || r <= 0) return;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.globalAlpha = clamp(a, 0, 1);
+  ctx.translate(x, y);
+  if (sq !== undefined && sq !== 1) ctx.scale(1, sq);
+  ctx.drawImage(GLOW, -r, -r, r * 2, r * 2);
+  ctx.restore();
+}
+
 const D = id => document.getElementById(id);
 const MENU = {
   open: false, wasPlay: false, tab: 'opts', asked: false,
@@ -713,6 +809,19 @@ const MENU = {
     q('#s-sub').textContent = OPT.sfx ? 'включены' : 'выключены';
     q('#b-resume').textContent = G.state === 'title' ? 'Играть' : G.state === 'dead' ? 'Закрыть' : 'Продолжить';
     if (this.tab === 'rec') this.paintRec();
+    if (this.tab === 'gift') this.paintGifts();
+  },
+  paintGifts() {
+    const n = LIFE.gift;
+    D('g-sum').textContent = n
+      ? 'открыто ' + n + ' из ' + GIFTS.length + ' · выше всего был этаж ' + (LIFE.floor || 0)
+      : 'ещё ни одного — лети дальше, всё впереди';
+    D('gift-list').innerHTML = GIFTS.map((g, i) => {
+      const on = i < n;
+      return '<div class="gif' + (on ? ' on' : '') + '"><div class="k">' + g.m + ' м</div><div class="v">' +
+        '<span class="n">' + (on ? g.n : '? ? ?') + '</span>' +
+        '<span class="d">' + (on ? g.d : 'откроется на ' + g.m + ' м') + '</span></div></div>';
+    }).join('');
   },
   paintRec() {
     const box = D('rec-list'), l = REC.list;
@@ -723,6 +832,7 @@ const MENU = {
       return '<div class="rec' + (i === 0 ? ' me' : '') + '"><div class="i">' + (i + 1) + '.</div>' +
         '<div class="sc">' + (r.s | 0).toLocaleString('ru-RU') + '</div>' +
         '<div class="d">' + (r.m | 0) + ' м · ×' + (r.c | 0) + ' комбо · ' + (r.g | 0) + ' искр · ' + (r.gt | 0) + ' врат' +
+        ((r.f | 0) || (r.gf | 0) ? ' · эт. ' + (r.f | 0) + ' · даров ' + (r.gf | 0) : '') +
         (when ? '<br>' + when : '') + '</div></div>';
     }).join('');
   },
@@ -768,6 +878,7 @@ const MENU = {
   });
   q('#b-exit-no').addEventListener('click', () => { MENU.asked = false; q('#b-exit').textContent = 'Выйти'; q('#b-exit-no').hidden = true; });
   q('#b-clear').addEventListener('click', () => { REC.clear(); G.best = 0; LS.set('radiance.best', '0'); MENU.paintRec(); });
+  q('#b-gclear').addEventListener('click', () => { LIFE.wipe(); MENU.paintGifts(); });
   D('b-back').addEventListener('click', () => { MENU.bye.classList.remove('on'); MENU.show('opts'); });
 })();
 
@@ -776,14 +887,70 @@ const G = {
   cam: 0, t: 0, clock: 0, run: 0,
   p: { x: 0, y: 0, vx: 0, vy: 0, r: 8, tilt: 0 },
   nodes: [], sparks: [], gates: [], parts: [], waves: [], texts: [], trail: [],
+  pets: [], prizes: [], meteors: [], whale: null,
   attached: null, hold: false, holdGap: 0,
   umbra: 0, umbraV: 0, dist: 0, score: 0, combo: 0, comboT: 0, maxCombo: 0,
   got: 0, gatesHit: 0, perfects: 0, beaten: false,
   best: 0, genX: 0, lastY: 0, lastNode: null, nodeN: 0, camY: 0, topOpen: false,
+  giftN: 0, newGift: 0, toast: null, haloT: 0, floorN: 0, floorMax: 0, topTouched: false,
   shake: 0, hitStop: 0, flash: 0, dark: 0, hue: 192, hueSky: 192,
   deadT: 0, tip: 0, demo: true, aiT: 0,
 };
 try { G.best = parseInt(localStorage.getItem('radiance.best') || '0', 10) || 0; } catch (e) { }
+
+/* ── мелкие хелперы наград ─────────────────────────────────────────── */
+const distM = () => G.dist / (11 * U);          // метры ровно те, что на счётчике
+function addScore(v) { G.score += v * (G.haloT > 0 ? 1.5 : 1); }   // венец: ×1.5
+function toast(n, d) { G.toast = { n, d, t: 0 }; }
+
+// один собранный огонь: k — кто взял (игрок 1, искра-подружка меньше)
+function takeSpark(s, k) {
+  s.got = true; G.got++;
+  if (!G.demo) {
+    // искры не гонят комбо — только держат его: ×N растёт на вратарях и идеальных
+    G.comboT = Math.max(G.comboT, 2.0);
+    addScore(Math.round((8 + Math.min(G.combo, 14) * 2) * B.echo * k));
+    A.spark(G.combo);
+  }
+  spark(s.x, s.y, k > 0.9 ? 9 : 5, G.hue + 30, 200 * U, 0.5);
+  wave(s.x, s.y, 4 * U, 60 * U, G.hue + 34, 0.5);
+}
+
+// приз самого верха
+function takePrize(z) {
+  z.got = true;
+  if (z.kind === 'star') {
+    addScore(900);
+    G.combo += 3; G.comboT = 3.6; G.maxCombo = Math.max(G.maxCombo, G.combo);
+    G.haloT = B.crown ? 1e9 : (B.gold ? 24 : 12);
+    if (!G.demo) text(z.x, z.y - 44 * U, 'ПОЛЯРНАЯ ЗВЕЗДА +900', 46);
+    spark(z.x, z.y, 46, 46, 460 * U, 1.2);
+    wave(z.x, z.y, 12 * U, 400 * U, 44, 1);
+  } else {
+    G.umbra -= 430 * U;                       // Тьма честно отступает назад
+    addScore(150);
+    if (!G.demo) text(z.x, z.y - 44 * U, 'ТЬМА ОТСТУПАЕТ', 22);
+    spark(z.x, z.y, 34, 34, 380 * U, 1.1);
+    wave(z.x, z.y, 10 * U, 320 * U, 30, 0.9);
+    G.dark = Math.max(0, G.dark - 0.5);
+  }
+  G.flash = Math.min(1, G.flash + 0.36); G.hitStop = 0.05;
+  G.shake = Math.max(G.shake, 5 * U);
+  if (!G.demo) { A.prize(); hap('heavy'); }
+}
+
+// новый дар полёта: один раз за дистанцию, навсегда до конца полёта
+function revealGift(i) {
+  const g = GIFTS[i]; if (!g) return;
+  applyGifts(i + 1);
+  toast(g.n, g.d);
+  G.flash = Math.min(1, G.flash + 0.3);
+  wave(G.p.x, G.p.y, 20 * U, 520 * U, G.hue + 50, 1);
+  spark(G.p.x, G.p.y, 40, G.hue + 56, 420 * U, 1.2);
+  A.reveal(); hap('medium');
+  if (i + 1 > LIFE.gift) G.newGift = i + 1;   // такой игрок видел впервые
+  LIFE.saw(i + 1, G.floorMax);
+}
 
 /* звёзды / дымка — нормализованные, зацикленные параллаксом */
 let stars = [], motes = [], postLayer = null;
@@ -876,7 +1043,8 @@ function addNode() {
   }
   // ── этаж выше: те же огоньки, поднятые на FLOORH (ряд зацепок → земля).
   //    Тропа внизу от этого не меняется вообще: просто над ней тоже есть за что взяться.
-  for (let k = 1, fk = floorsOpen(); k <= fk; k++) {
+  const fk = floorsOpen();
+  for (let k = 1; k <= fk; k++) {
     if (Math.random() > 0.9 - k * 0.07) continue;       // чем выше этаж, тем он разреженнее
     G.nodes.push({
       x: x + rand(-60, 60) * U, y: y - k * FLOORH + rand(-13, 13) * U,
@@ -884,6 +1052,18 @@ function addNode() {
       seed: Math.random() * 1000, pet: 5 + ((Math.random() * 3) | 0), spin: rand(-0.5, 0.5),
       flash: 0, born: G.clock
     });
+  }
+  // ── призы самого верха: только на последнем открытом ярусе и только когда
+  //    их уже открыл дар. Пока этажей нет — в мире не появляется ничего лишнего.
+  if (fk >= 1 && (B.polar || B.lamp)) {
+    const kind = B.polar && B.lamp ? (Math.random() < 0.58 ? 'star' : 'lamp')
+               : B.polar ? 'star' : 'lamp';
+    if (Math.random() < (kind === 'star' ? 0.12 : 0.08)) {
+      G.prizes.push({
+        x: x + gap * rand(0.34, 0.62), y: y - fk * FLOORH + rand(-46, 54) * U,
+        kind, ph: rand(0, TAU), got: false, pop: 0
+      });
+    }
   }
 }
 function genAhead() {
@@ -893,6 +1073,7 @@ function genAhead() {
   if (G.nodes.length > 40) { G.nodes = G.nodes.filter(n => n.x > cut); }
   G.sparks = G.sparks.filter(s => s.x > cut && !s.got);
   G.gates = G.gates.filter(g => g.x > cut);
+  G.prizes = G.prizes.filter(z => z.x > cut && !z.got);
 }
 
 function reset(demo) {
@@ -901,6 +1082,9 @@ function reset(demo) {
   G.topOpen = Math.random() < 0.5;      // пятый этаж открывается не в каждом полёте
   G.lastY = H * 0.34;                   // тропа стартует ровно от уровня игрока
   G.nodes = []; G.sparks = []; G.gates = []; G.parts = []; G.waves = []; G.texts = []; G.trail = [];
+  G.pets = []; G.prizes = []; G.meteors = []; G.whale = null;
+  G.giftN = 0; G.newGift = 0; G.toast = null; G.haloT = 0; G.floorN = 0; G.floorMax = 0; G.topTouched = false;
+  applyGifts(0);                        // новый полёт — дары открываются заново
   const p = G.p;
   p.x = W * 0.36; p.y = H * 0.34; p.vx = 560 * U; p.vy = 40 * U; p.tilt = 0;
   // первый огонёк — прямо над стартом: нить доступна с первой же секунды
@@ -925,7 +1109,7 @@ function findAnchor() {
   for (const n of G.nodes) {
     if (n === G.attached) continue;
     const dx = n.x - p.x, dy = n.y - p.y, d = hypot(dx, dy);
-    if (d > RANGE) continue;
+    if (d > RANGE * B.range) continue;
     if (d < 96 * U) continue;          // слишком близко — будет «карусель» вместо дуги
     if (dx < -70 * U) continue;
     let s = d + (dx < 0 ? -dx * 1.7 : 0) - dx * 0.22 + Math.abs(dy) * 0.30
@@ -938,9 +1122,15 @@ function findAnchor() {
 function attach(n, silent) {
   const p = G.p;
   const d = hypot(p.x - n.x, p.y - n.y);
-  n.len = clamp(d, 72 * U, 302 * U);
+  n.len = clamp(d, 72 * U, 302 * U * B.range);
   n.taut = false; n.slackT = 0; n.grabT = G.t; n.flash = 1;
   G.attached = n;
+  // засчитываем высоту: на каком ярусе держишься — тот и этаж
+  if (n.up && n.up > G.floorMax) {
+    G.floorMax = n.up;
+    LIFE.saw(G.giftN, G.floorMax);
+    if (n.up >= floorsOpen()) summit();
+  }
   const sp = hypot(p.vx, p.vy) || 1;
   p.vx += p.vx / sp * 96 * U; p.vy += p.vy / sp * 96 * U;
   wave(n.x, n.y, 16 * U, 130 * U, G.hue + 26, 0.55);
@@ -952,9 +1142,10 @@ function release(judge) {
   if (!n || !judge) return;
   const sp = hypot(p.vx, p.vy);
   if (!G.demo && n.taut && sp > 740 * U && (G.t - n.grabT) > 0.11) {
-    p.vx *= 1.145; p.vy *= 1.145;
+    const k = 1.145 * B.boost;
+    p.vx *= k; p.vy *= k;
     const bonus = Math.round(20 + sp / (14 * U));
-    G.score += bonus; G.perfects++;
+    addScore(bonus); G.perfects++;
     G.combo++; G.comboT = 2.6; G.maxCombo = Math.max(G.maxCombo, G.combo);
     text(p.x, p.y - 34 * U, 'ИДЕАЛЬНО +' + bonus, G.hue + 40);
     wave(p.x, p.y, 10 * U, 260 * U, G.hue + 60, 0.9);
@@ -999,6 +1190,67 @@ function spark(x, y, n, hue, spd, life) {
 function wave(x, y, r0, r1, hue, a) { G.waves.push({ x, y, r0, r1, r: r0, hue, a, l: 1 }); }
 function text(x, y, s, hue) { G.texts.push({ x, y, s, hue, l: 1 }); }
 
+// добрался до последнего открытого яруса — вершина
+function summit() {
+  if (G.topTouched) return;
+  G.topTouched = true;
+  if (!G.demo) G.score += 500;
+  if (!G.demo) {
+    text(G.p.x, G.p.y - 56 * U, 'ВЕРШИНА +500', 50);
+    wave(G.p.x, G.p.y, 24 * U, 560 * U, G.hue + 60, 1);
+    spark(G.p.x, G.p.y, 30, 50, 380 * U, 1.1);
+    G.flash = Math.min(1, G.flash + 0.3); hap('heavy');
+  }
+  if (floorsOpen() === 3 && !G.topOpen) {
+    G.topOpen = true;                  // вершина открыла пятый ярус — уже в этом полёте
+    toast('Пятый этаж', 'ты дотронулся до верха — над тобой открылся ещё один ярус зацепок');
+  }
+}
+
+/* ── искры-подружки ───────────────────────────────────────────────────
+   Их дарует полёт, они кружат за игроком и собирают мелкие огни сами.
+   Дешевле, чем кажется: на каждую — один blit и два витых штриха. */
+function updatePets(dt) {
+  const p = G.p;
+  while (G.pets.length < B.comps)
+    G.pets.push({ x: p.x, y: p.y, vx: p.vx * 0.4, vy: p.vy * 0.4, ph: rand(0, TAU) });
+  if (G.pets.length > B.comps) G.pets.length = B.comps;
+  if (!G.pets.length) return;
+  const n = G.pets.length, R = 150 * U;
+  for (let i = 0; i < n; i++) {
+    const q = G.pets[i];
+    const a = G.t * 1.15 + i / n * TAU;
+    const tx = p.x - 66 * U + Math.cos(a) * 48 * U;
+    const ty = p.y - 34 * U + Math.sin(a * 1.27) * 42 * U;
+    q.vx += (tx - q.x) * 9 * dt; q.vy += (ty - q.y) * 9 * dt;
+    q.vx *= 1 - 2.6 * dt; q.vy *= 1 - 2.6 * dt;
+    q.x += q.vx * dt; q.y += q.vy * dt; q.ph += dt;
+    for (const s of G.sparks) {                 // мелочь сама липнет к подружке
+      if (s.got) continue;
+      const dx = s.x - q.x, dy = s.y - q.y, d2 = dx * dx + dy * dy;
+      if (d2 > R * R) continue;
+      const d = Math.sqrt(d2) || 1;
+      if (d < 26 * U) { takeSpark(s, 0.6); continue; }
+      const k = (1 - d / R) * 3.4 * dt;
+      s.x -= dx / d * R * k; s.y -= dy / d * R * k;
+    }
+  }
+}
+
+/* ── небо по заслугам: метеоры и киты загораются только дарами ──────── */
+function updateSky(dt) {
+  if (G.toast) { G.toast.t += dt; if (G.toast.t > 3.6) G.toast = null; }
+  if (G.haloT > 0 && !B.crown) G.haloT -= dt;
+  if (B.met && G.meteors.length < 2 && Math.random() < dt * 0.22)
+    G.meteors.push({ x: rand(0.15, 1.05) * W, y: rand(-0.05, 0.34) * H,
+                     vx: -rand(560, 980) * U, vy: rand(240, 430) * U, l: 1, s: rand(0.7, 1.4) });
+  for (const m of G.meteors) { m.x += m.vx * dt; m.y += m.vy * dt; m.l -= dt * 0.85; }
+  if (G.meteors.length) G.meteors = G.meteors.filter(m => m.l > 0 && m.y < H * 0.8);
+  if (B.whale && !G.whale && Math.random() < dt * 0.045)
+    G.whale = { x: W + 240 * U, y: H * rand(0.12, 0.36), v: -rand(34, 62) * U, s: rand(0.75, 1.35), ph: rand(0, TAU) };
+  if (G.whale) { G.whale.x += G.whale.v * dt; G.whale.ph += dt; if (G.whale.x < -320 * U) G.whale = null; }
+}
+
 /* ══════════════════════════════════════════════════════════════════
    ОБНОВЛЕНИЕ
    ══════════════════════════════════════════════════════════════════ */
@@ -1019,7 +1271,7 @@ function update(dt) {
   }
 
   // ── физика игрока
-  p.vy += GRAV * dt;
+  p.vy += GRAV * B.grav * dt;
   if (G.attached) p.vx += WIND * dt;
   const drag = G.attached ? 0.02 : 0.05;
   p.vx -= p.vx * drag * dt; p.vy -= p.vy * drag * dt;
@@ -1061,6 +1313,7 @@ function update(dt) {
   //    Выше последнего открытого этажа камера встаёт — и там получается потолок.
   const camTop = floorsOpen() * FLOORH;
   G.camY = lerp(G.camY, clamp(H * 0.46 - p.y, 0, camTop), 1 - Math.exp(-7 * dt));
+  G.floorN = FLOORH > 0 ? Math.round(G.camY / FLOORH) : 0;
 
   // ── море и небо
   if (p.y > seaY - p.r && p.vy > 0) {
@@ -1086,29 +1339,26 @@ function update(dt) {
     }
   }
 
-  // ── искры
+  // ── искры: игрок и искры-подружки
   const cr = 46 * U;
   for (const s of G.sparks) {
     if (s.got) continue;
-    if (hypot(p.x - s.x, p.y - s.y) < cr + p.r) {
-      s.got = true; G.got++;
-      if (!G.demo) {
-        // искры не гонят комбо — только держат его: ×N растёт на вратарях и идеальных
-        G.comboT = Math.max(G.comboT, 2.0);
-        G.score += 8 + Math.min(G.combo, 14) * 2;
-        A.spark(G.combo);
-      }
-      spark(s.x, s.y, 9, G.hue + 30, 200 * U, 0.5);
-      wave(s.x, s.y, 4 * U, 60 * U, G.hue + 34, 0.5);
-    }
+    if (hypot(p.x - s.x, p.y - s.y) < cr + p.r) takeSpark(s, 1);
   }
+  updatePets(dt);
+  // ── призы самого верха
+  for (const z of G.prizes) {
+    if (z.got) continue;
+    if (hypot(p.x - z.x, p.y - z.y) < 54 * U + p.r) takePrize(z);
+  }
+  updateSky(dt);
   // ── врата
   for (const g of G.gates) {
     g.pop *= Math.exp(-4 * dt);
     if (!g.hit && hypot(p.x - g.x, p.y - g.y) < g.r * 0.92) {
       g.hit = true; g.pop = 1;
       if (!G.demo) {
-        G.gatesHit++; G.score += 260; G.combo += 2; G.comboT = 3.0;
+        G.gatesHit++; addScore(260); G.combo += 2; G.comboT = 3.0;
         G.maxCombo = Math.max(G.maxCombo, G.combo);
         G.maxCombo = Math.max(G.maxCombo, G.combo);
         text(g.x, g.y - g.r - 12 * U, '+Sияние +260', G.hue + 70);
@@ -1149,8 +1399,14 @@ function update(dt) {
     // Тьма трогается плавно: первые секунды у новичка есть право на ошибку
     const warm = clamp(0.3 + G.run / 9, 0.3, 1);
     const base = 150 * U + Math.min(520 * U, G.dist / 24);
-    G.umbraV = lerp(G.umbraV, (base + clamp((gap - 700 * U) * 0.38, -70 * U, 74 * U)) * warm, 1 - Math.exp(-1.6 * dt));
+    G.umbraV = lerp(G.umbraV, (base + clamp((gap - 700 * U) * 0.38, -70 * U, 74 * U)) * warm * B.umbraK, 1 - Math.exp(-1.6 * dt));
     G.umbra += G.umbraV * dt;
+    // дары полёта: пролетел ещё — получил ещё
+    for (;;) {
+      const g = GIFTS[G.giftN];
+      if (!g || G.dist / (11 * U) < g.m) break;
+      revealGift(G.giftN); G.giftN++;
+    }
     const dangerK = clamp(1 - (gap - 90 * U) / (520 * U), 0, 1);
     G.dark = lerp(G.dark, dangerK, 1 - Math.exp(-4 * dt));
     A.danger(G.dark);
@@ -1201,14 +1457,103 @@ function die() {
   A.die(); A.danger(0); hap('lose');
   const sc = Math.floor(G.score);
   if (sc > G.best) { G.best = sc; LS.set('radiance.best', String(sc)); }
-  if (!G.demo && sc > 0)                        // в закладку идут только настоящие полёты
+  if (!G.demo && sc > 0) {                      // в закладку идут только настоящие полёты
+    LIFE.saw(G.giftN, G.floorMax);
     REC.push({ s: sc, m: Math.floor(G.dist / (11 * U)), c: G.maxCombo | 0, g: G.got | 0,
-               gt: G.gatesHit | 0, p: G.perfects | 0, t: Date.now() });
+               gt: G.gatesHit | 0, p: G.perfects | 0, f: G.floorMax | 0, gf: G.giftN | 0,
+               t: Date.now() });
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════
    РЕНДЕР
    ══════════════════════════════════════════════════════════════════ */
+
+/* Небо по заслугам. Всё рисуют дары: без них здесь просто пусто. */
+const MOON = { x: 0, y: 0, R: 0, k: 0, on: false };
+function drawMoon(vy) {
+  MOON.on = B.moon;
+  if (!MOON.on) return;
+  const mk = clamp(G.floorMax / 4, 0, 1) * 0.5 + clamp(distM() / 6000, 0, 1) * 0.5;
+  const R = (24 + 30 * mk) * U;
+  const mx = W * (0.72 + 0.10 * Math.sin(G.cam * 0.000045));
+  const my = H * (0.30 - 0.13 * mk) + vy * 0.05;
+  drawGlow(mx, my, R * 5.6, 0.22 + 0.20 * mk);
+  ctx.save();
+  ctx.beginPath(); ctx.arc(mx, my, R, 0, TAU); ctx.clip();
+  const g = ctx.createRadialGradient(mx - R * 0.25, my - R * 0.3, R * 0.1, mx, my, R * 1.15);
+  g.addColorStop(0, 'rgba(255,251,236,0.97)');
+  g.addColorStop(0.7, 'rgba(238,240,232,0.86)');
+  g.addColorStop(1, 'rgba(176,196,214,0.7)');
+  ctx.fillStyle = g; ctx.fillRect(mx - R, my - R, R * 2, R * 2);
+  // фаза: тень наползает по мере того, как растёт полёт
+  const ph = ctx.createLinearGradient(mx - R, my, mx + R, my);
+  const t = 0.62 - 0.5 * mk;
+  ph.addColorStop(0, 'rgba(6,10,26,0.72)');
+  ph.addColorStop(clamp(t, 0.02, 0.98), 'rgba(6,10,26,0.5)');
+  ph.addColorStop(1, 'rgba(6,10,26,0)');
+  ctx.fillStyle = ph; ctx.fillRect(mx - R, my - R, R * 2, R * 2);
+  ctx.restore();
+  ctx.strokeStyle = 'rgba(255,250,232,0.22)'; ctx.lineWidth = 1.2 * U;
+  ctx.beginPath(); ctx.arc(mx, my, R, 0, TAU); ctx.stroke();
+  MOON.x = mx; MOON.y = my; MOON.R = R; MOON.k = mk;
+}
+
+function drawWhale(t) {
+  const w = G.whale; if (!w) return;
+  const s = w.s * U, y = w.y + Math.sin(w.ph * 0.7) * 14 * U;
+  if (w.x - 220 * s < -320 || w.x + 220 * s > W + 320) return;
+  ctx.save();
+  ctx.translate(w.x, y); ctx.scale(s, s);
+  const fw = Math.sin(w.ph * 1.5) * 26;
+  ctx.fillStyle = 'rgba(96,128,198,0.16)';        // силуэт светлее неба — иначе его просто нет
+  ctx.strokeStyle = 'rgba(160,208,255,0.22)';
+  ctx.lineWidth = 2.2;
+  ctx.beginPath();                              // хвост машет
+  ctx.moveTo(104, -4);
+  ctx.quadraticCurveTo(148, -34 + fw, 186, -52 + fw);
+  ctx.quadraticCurveTo(152, -6 + fw * 0.3, 172, 26 + fw * 0.7);
+  ctx.quadraticCurveTo(136, 12, 104, 8);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.beginPath();                              // тело: голова слева
+  ctx.moveTo(-146, 2);
+  ctx.bezierCurveTo(-138, -30, -60, -52, 26, -34);
+  ctx.bezierCurveTo(70, -24, 96, -16, 112, -6);
+  ctx.lineTo(112, 12);
+  ctx.bezierCurveTo(88, 16, 62, 26, 22, 34);
+  ctx.bezierCurveTo(-52, 48, -122, 34, -146, 2);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.strokeStyle = 'rgba(150,220,255,0.30)';   // тёплый блик брюха
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(-138, 10); ctx.bezierCurveTo(-90, 40, 30, 34, 108, 8);
+  ctx.stroke();
+  for (let i = 0; i < 3; i++) {                 // огни вдоль спины
+    const lx = -96 + i * 74, ly = -26 - 6 * Math.sin(t * 2 + i);
+    ctx.fillStyle = 'rgba(190,240,255,' + (0.35 + 0.3 * Math.sin(t * 3 + i * 2)) + ')';
+    ctx.beginPath(); ctx.arc(lx, ly, 2.2, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+  drawGlow(w.x, y + 26 * s, 190 * s, 0.10);
+}
+
+function drawMeteors() {
+  if (!G.meteors.length) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+  for (const m of G.meteors) {
+    const a = clamp(m.l, 0, 1), L = 150 * U * m.s;
+    const nx = m.vx, ny = m.vy, d = hypot(nx, ny) || 1;
+    const g = ctx.createLinearGradient(m.x, m.y, m.x - nx / d * L, m.y - ny / d * L);
+    g.addColorStop(0, 'rgba(255,250,236,' + 0.75 * a + ')');
+    g.addColorStop(1, 'rgba(180,220,255,0)');
+    ctx.strokeStyle = g; ctx.lineWidth = 2 * U * m.s;
+    ctx.beginPath(); ctx.moveTo(m.x, m.y); ctx.lineTo(m.x - nx / d * L, m.y - ny / d * L); ctx.stroke();
+    drawGlow(m.x, m.y, 12 * U * m.s, 0.5 * a);
+  }
+  ctx.restore();
+}
+
 function bg(t) {
   const h = G.hueSky;
   const vy = G.camY;                    // параллакс по вертикали: чем ближе слой,
@@ -1270,6 +1615,11 @@ function bg(t) {
     ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(x, y, m.r * 6, 0, TAU); ctx.fill();
   }
   ctx.restore();
+
+  // ── всё ниже — подарки дальних полётов: луна, киты, метеоры
+  drawMoon(vy);
+  drawWhale(t);
+  drawMeteors();
 }
 
 function sea(t) {
@@ -1294,7 +1644,7 @@ function sea(t) {
     }
     ctx.stroke();
   }
-  // блип отражения игрока
+  // блик отражения игрока
   const p = G.p, px = p.x - G.cam, d = clamp(1 - (seaY - p.y) / (300 * U), 0, 1);
   if (d > 0.01 && px > -100 && px < W + 100) {
     const gr = ctx.createRadialGradient(px, seaY + 30 * U, 0, px, seaY + 30 * U, 150 * U);
@@ -1302,6 +1652,9 @@ function sea(t) {
     ctx.fillStyle = gr; ctx.save(); ctx.translate(px, seaY + 26 * U); ctx.scale(1, 0.28);
     ctx.beginPath(); ctx.arc(0, 0, 150 * U, 0, TAU); ctx.fill(); ctx.restore();
   }
+  // дорожка от луны — тоже заслуженная
+  if (MOON.on && MOON.y < seaY)
+    drawGlow(MOON.x, seaY + 14 * U, MOON.R * (4.4 + 1.2 * Math.sin(t * 0.9)), 0.09 + 0.08 * MOON.k, 0.26);
   ctx.restore();
 
   // линия горизонта — тонкая светящаяся нить
@@ -1419,6 +1772,75 @@ function drawSparks(t) {
   ctx.restore();
 }
 
+/* призы самого верха: Полярная звезда и Лампада. Их нет в мире, пока
+   дар не открыт, — тогда просто пустой цикл и ни одного вызова */
+function drawPrizes(t) {
+  if (!G.prizes.length) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (const z of G.prizes) {
+    if (z.got) continue;
+    const x = z.x - G.cam, sy = z.y + G.camY;      // экранная высота: camera ходит по этажам
+    if (x < -140 * U || x > W + 140 * U || sy < -260 * U || sy > H + 260 * U) continue;
+    const gold = z.kind === 'star';
+    const y = z.y + Math.sin(t * 1.6 + z.ph) * 6 * U;
+    const pulse = 0.72 + 0.28 * Math.sin(t * 2.4 + z.ph);
+    const R = (gold ? 29 : 23) * U;
+    drawGlow(x, y, R * (gold ? 4.8 : 4), (gold ? 0.52 : 0.44) * pulse);
+    ctx.save(); ctx.translate(x, y);
+    if (gold) {
+      ctx.rotate(t * 0.5 + z.ph);
+      const L = R * 1.75, w = R * 0.26;
+      ctx.fillStyle = 'rgba(255,242,196,0.95)';
+      ctx.beginPath();
+      ctx.moveTo(0, -L); ctx.quadraticCurveTo(w, -w, L, 0);
+      ctx.quadraticCurveTo(w, w, 0, L);
+      ctx.quadraticCurveTo(-w, w, -L, 0);
+      ctx.quadraticCurveTo(-w, -w, 0, -L);
+      ctx.closePath(); ctx.fill();
+      ctx.rotate(-t * 1.5);
+      ctx.strokeStyle = 'rgba(255,226,140,0.5)'; ctx.lineWidth = 1.4 * U;
+      ctx.setLineDash([3 * U, 7 * U]);
+      ctx.beginPath(); ctx.arc(0, 0, R * 1.4, 0, TAU); ctx.stroke();
+      ctx.setLineDash([]);
+    } else {
+      const fl = 1 + 0.13 * Math.sin(t * 7 + z.ph);
+      ctx.fillStyle = 'rgba(255,212,146,0.95)';
+      ctx.beginPath();
+      ctx.moveTo(0, -R * 1.5 * fl);
+      ctx.bezierCurveTo(R * 0.8, -R * 0.5, R * 0.62, R * 0.52, 0, R * 0.82);
+      ctx.bezierCurveTo(-R * 0.62, R * 0.52, -R * 0.8, -R * 0.5, 0, -R * 1.5 * fl);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,238,0.95)';
+      ctx.beginPath(); ctx.ellipse(0, R * 0.18, R * 0.24, R * 0.44 * fl, 0, 0, TAU); ctx.fill();
+      ctx.strokeStyle = 'rgba(255,206,132,0.5)'; ctx.lineWidth = 1.6 * U;
+      ctx.beginPath(); ctx.arc(0, R * 1.1, R * 0.72, Math.PI * 0.08, Math.PI * 0.92); ctx.stroke();
+    }
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+/* искры-подружки */
+function drawPets(t) {
+  if (!G.pets.length) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.lineCap = 'round';
+  const h = G.hue + 50;
+  for (let i = 0; i < G.pets.length; i++) {
+    const q = G.pets[i], x = q.x - G.cam;
+    if (x < -80 * U || x > W + 80 * U || q.y + G.camY < -80 * U || q.y + G.camY > H + 80 * U) continue;
+    const a = 0.7 + 0.3 * Math.sin(q.ph * 4 + i);
+    drawGlow(x, q.y, 22 * U, 0.4 * a);
+    const w = Math.sin(q.ph * 6) * 5 * U;
+    ctx.strokeStyle = hsl(h, 96, 84, 0.5 * a); ctx.lineWidth = 1.3 * U;
+    ctx.beginPath();
+    ctx.moveTo(x - 7 * U, q.y - w); ctx.quadraticCurveTo(x, q.y - 6 * U - w, x + 7 * U, q.y - w);
+    ctx.stroke();
+    ctx.fillStyle = hsl(h, 100, 95, a);
+    ctx.beginPath(); ctx.arc(x, q.y, 2.8 * U, 0, TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+
 function drawRope(t) {
   const n = G.attached; if (!n) return;
   const p = G.p, px = p.x - G.cam, nx = n.x - G.cam;
@@ -1458,7 +1880,8 @@ function drawPlayer(t) {
   for (let i = 1; i < G.trail.length; i++) {
     const a0 = G.trail[i - 1], a1 = G.trail[i];
     const k = i / G.trail.length;
-    ctx.strokeStyle = hsl(a1.hue + 18 * k, 96, 68, 0.26 * k * k);
+    const hu = B.gold ? 46 + 12 * k : a1.hue + 18 * k;
+    ctx.strokeStyle = hsl(hu, B.gold ? 90 : 96, 68, 0.26 * k * k);
     ctx.lineWidth = (0.6 + k * 9 * U) * (0.5 + spd);
     ctx.beginPath(); ctx.moveTo(a0.x - G.cam, a0.y); ctx.lineTo(a1.x - G.cam, a1.y); ctx.stroke();
   }
@@ -1486,6 +1909,22 @@ function drawPlayer(t) {
   // ядро
   ctx.fillStyle = '#ffffff';
   ctx.beginPath(); ctx.arc(0, 0, p.r * 0.9, 0, TAU); ctx.fill();
+
+  // венец Полярной звезды: пока горит — всё считается в полтора раза больше
+  if (G.haloT > 0) {
+    const ha = clamp(G.haloT / 3, 0, 1);
+    const hr = p.r * (4.6 + Math.sin(t * 5) * 0.22);
+    ctx.strokeStyle = hsl(46, 96, 78, 0.3 * ha); ctx.lineWidth = 1.2 * U;
+    ctx.beginPath(); ctx.ellipse(0, 0, hr * 1.5, hr * 0.62, Math.sin(t * 0.8) * 0.22, 0, TAU); ctx.stroke();
+    for (let i = 0; i < 8; i++) {
+      const a2 = t * 1.1 + i / 8 * TAU;
+      ctx.fillStyle = hsl(46, 100, 88, (0.45 + 0.55 * Math.sin(a2 * 2)) * ha);
+      ctx.beginPath();
+      ctx.arc(Math.cos(a2) * hr * 1.5, Math.sin(a2) * hr * 0.62, p.r * 0.34, 0, TAU);
+      ctx.fill();
+    }
+    drawGlow(0, 0, p.r * 12, 0.15 * ha);
+  }
   ctx.restore();
 }
 
@@ -1601,6 +2040,26 @@ function ui(t) {
       ctx.fillRect(W / 2 - bw / 2, pad * 0.8 + cs + 8, bw * clamp(G.comboT / 2.6, 0, 1), 2);
     }
 
+    // ── высота и венец: то, ради чего лезут вверх
+    ctx.textAlign = 'left';
+    let uy = pad + s1 * 2.3;
+    if (G.floorN > 0) {
+      ctx.fillStyle = hsl(46, 92, 80, 0.82);
+      ctx.font = `500 ${Math.round(s1 * 0.46)}px 'Segoe UI',sans-serif`;
+      ctx.fillText('Э Т А Ж  ' + G.floorN, pad, uy);
+      uy += s1 * 0.85;
+    }
+    if (G.haloT > 0) {
+      const hw = 96 * U, hha = clamp(G.haloT / 3, 0, 1);
+      ctx.fillStyle = hsl(46, 96, 86, 0.86 * hha);
+      ctx.font = `500 ${Math.round(s1 * 0.42)}px 'Segoe UI',sans-serif`;
+      ctx.fillText('В Е Н Е Ц  ×1.5', pad, uy);
+      ctx.fillStyle = 'rgba(255,255,255,0.14)';
+      ctx.fillRect(pad, uy + s1 * 0.3, hw, 2);
+      ctx.fillStyle = hsl(46, 96, 70, 0.9 * hha);
+      ctx.fillRect(pad, uy + s1 * 0.3, hw * clamp(B.crown ? 1 : G.haloT / 12, 0, 1), 2);
+    }
+
     if (G.tip > 0 && G.state === 'play') {
       const a = clamp(G.tip / 2.2, 0, 1) * 0.8;
       ctx.textAlign = 'center';
@@ -1608,6 +2067,28 @@ function ui(t) {
       ctx.font = `400 ${Math.round(15 * U)}px 'Segoe UI',sans-serif`;
       ctx.fillText('держи — нить вспыхнет   ·   отпусти на дуге — полетишь выше', W / 2, H * 0.13);
     }
+  }
+
+  // ── новый дар полёта: всплывает поверх всего, живёт 3.6 с
+  if (G.toast) {
+    const T = G.toast;
+    const k = T.t < 0.45 ? T.t / 0.45 : T.t > 3.0 ? clamp((3.6 - T.t) / 0.6, 0, 1) : 1;
+    const fs = Math.round(clamp(W * 0.034, 19, 40)), small = Math.max(9, Math.round(fs * 0.4));
+    const ty = H * 0.235 + (1 - k) * 12;
+    ctx.save();
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.globalAlpha = k;
+    ctx.fillStyle = 'rgba(255,244,214,0.4)';
+    ctx.font = `500 ${Math.round(small * 0.9)}px 'Segoe UI',sans-serif`;
+    ctx.fillText('Н О В Ы Й   Д А Р   П О Л Ё Т А', W / 2, ty - fs * 0.78);
+    ctx.shadowColor = hsl(46, 96, 62, 0.9); ctx.shadowBlur = 30;
+    ctx.fillStyle = 'rgba(255,250,236,0.98)';
+    ctx.font = `200 ${fs}px 'Segoe UI',sans-serif`;
+    ctx.fillText(T.n, W / 2, ty);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(226,240,255,0.62)';
+    ctx.font = `300 ${small}px 'Segoe UI',sans-serif`;
+    ctx.fillText(T.d, W / 2, ty + fs * 0.76);
+    ctx.restore();
   }
 
   // предупреждение о Тьме
@@ -1682,26 +2163,40 @@ function deadScreen(t) {
   const rows = [
     ['Дистанция', Math.floor(G.dist / (11 * U)) + ' м'],
     ['Счёт', Math.floor(G.score).toLocaleString('ru-RU')],
+    ['Этаж', G.floorMax ? '№ ' + G.floorMax + (G.topTouched ? '   ·   вершина взята' : '') : '—'],
+    ['Дары полёта', G.giftN + ' из ' + GIFTS.length],
     ['Макс. комбо', '×' + G.maxCombo],
     ['Искр собрано', G.got + '   ·   Врат ' + G.gatesHit + '   ·   Идеально ' + G.perfects],
   ];
-  const fs = clamp(W * 0.019, 13, 21);
+  const fs = clamp(W * 0.019, 13, 21), dy = H * 0.415, step = fs * 1.9;
   rows.forEach((r, i) => {
-    const y = H * 0.44 + i * fs * 2.2;
+    const y = dy + i * step;
     ctx.textAlign = 'right'; ctx.fillStyle = 'rgba(190,220,240,0.45)';
     ctx.font = `400 ${Math.round(fs)}px 'Segoe UI',sans-serif`;
     ctx.fillText(r[0], cx - 14, y);
     ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(238,250,255,0.95)';
-    ctx.font = `300 ${Math.round(fs * (i === 1 ? 1.35 : 1))}px 'Segoe UI',sans-serif`;
+    ctx.font = `300 ${Math.round(fs * (i === 1 ? 1.3 : 1))}px 'Segoe UI',sans-serif`;
     ctx.fillText(r[1], cx + 14, y);
   });
 
   const isBest = Math.floor(G.score) >= G.best && G.best > 0;
+  let ny = dy + rows.length * step + fs * 0.6;
   ctx.textAlign = 'center';
   if (isBest) {
     ctx.fillStyle = hsl(G.hue + 40, 96, 86, 0.9);
     ctx.font = `600 ${Math.round(fs * 0.95)}px 'Segoe UI',sans-serif`;
-    ctx.fillText('Н О В Ы Й   Р Е К О Р Д', cx, H * 0.44 + rows.length * fs * 2.2 + fs);
+    ctx.fillText('Н О В Ы Й   Р Е К О Р Д', cx, ny);
+    ny += fs * 1.5;
+  }
+  if (G.newGift && !TG.mainShown() && H > 470) {   // то, что игрок открыл впервые
+    ctx.fillStyle = hsl(46, 96, 82, 0.95);
+    ctx.shadowColor = hsl(46, 96, 60, 0.8); ctx.shadowBlur = 22;
+    ctx.font = `500 ${Math.round(fs * 0.95)}px 'Segoe UI',sans-serif`;
+    ctx.fillText('В ПЕРВЫЕ: ДАР «' + GIFTS[G.newGift - 1].n.toUpperCase() + '»', cx, ny);
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(220,238,255,0.45)';
+    ctx.font = `400 ${Math.round(fs * 0.8)}px 'Segoe UI',sans-serif`;
+    ctx.fillText('собрано ' + G.giftN + ' из ' + GIFTS.length + ' — список в меню, вкладка «Дары»', cx, ny + fs * 1.35);
   }
   const a = 0.5 + 0.5 * Math.sin(t * 2.4);
   ctx.fillStyle = `rgba(228,246,255,${0.35 + 0.4 * a})`;
@@ -1755,10 +2250,12 @@ function render(t) {
   sea(t);
   drawGates(t);
   drawSparks(t);
+  drawPrizes(t);
   drawWaves();
   drawNodes(t);
   drawRope(t);
   drawParts();
+  drawPets(t);
   if (G.state !== 'dead' || G.deadT < 1.6) drawPlayer(t);
   drawTexts();
   drawUmbra(t);
